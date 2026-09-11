@@ -1,0 +1,18 @@
+# EditorConfig  —  https://editorconfig.org
+# Top-level editor configuration for this Salesforce DX project.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Agent Script (.agent) files REQUIRE tab-only indentation.
+# Agent Builder 2.0 (NextGen Authoring) rejects space-indented .agent files
+# with PARSE_EXCEPTION on save — even when `sf agent validate` passes. Do NOT
+# change indent_style below to spaces.
+[*.agent]
+indent_style = tab
+indent_size = tab
+trim_trailing_whitespace = true

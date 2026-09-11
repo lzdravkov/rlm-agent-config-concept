@@ -35,23 +35,79 @@ private class AgentAdvisorServiceTest {
         String cannedSessionId;
         String lastUserMessage;   // captured for context-block assertions
         String lastSessionId;     // captured for multi-turn assertions
+        String lastAgentApiName;  // captured for agent-selection assertions
         CannedAgentGateway(String cannedResponse, String cannedSessionId) {
             this.cannedResponse = cannedResponse;
             this.cannedSessionId = cannedSessionId;
         }
-        public AgentAdvisorService.AgentRawResponse invoke(String userMessage, String sessionId) {
+        public AgentAdvisorService.AgentRawResponse invoke(
+                String userMessage, String sessionId, String agentApiName) {
             this.lastUserMessage = userMessage;
             this.lastSessionId = sessionId;
+            this.lastAgentApiName = agentApiName;
             return new AgentAdvisorService.AgentRawResponse(cannedResponse, cannedSessionId);
         }
     }
 
     /** Simulates a hard invocation failure (empty/failed action result). */
     private class ThrowingAgentGateway implements AgentAdvisorService.AgentGateway {
-        public AgentAdvisorService.AgentRawResponse invoke(String userMessage, String sessionId) {
+        public AgentAdvisorService.AgentRawResponse invoke(
+                String userMessage, String sessionId, String agentApiName) {
             throw new AgentAdvisorService.AgentAdvisorException('Simulated agent invocation failure');
         }
     }
+
+    // =====================================================================
+    // Product reader stub (for the pre-persist product-context grounding path)
+    // =====================================================================
+    /** Canned product catalog reader for ProductConfigGroundingService's @TestVisible seam. */
+    private class StubProductReader implements ProductConfigGroundingService.CatalogReader {
+        public ProductConfigGroundingService.ProductCatalog read(String productId) {
+            ProductConfigGroundingService.ProductCatalog cat =
+                new ProductConfigGroundingService.ProductCatalog();
+            cat.productName = 'FESBA Generator Set';
+            cat.basedOnId = '11B000000000001';
+
+            ProductConfigGroundingService.ClassAttr kw =
+                new ProductConfigGroundingService.ClassAttr();
+            kw.developerName = 'requiredKW';
+            kw.name = 'Required KW';
+            kw.dataType = 'Number';
+            kw.isRequired = false;
+            kw.isPriceImpacting = true;
+            kw.attributeId = '0tj000000000001';
+            kw.picklistId = null;
+            cat.attributes.add(kw);
+
+            Id dutyPicklistId = '0v5000000000001';
+            ProductConfigGroundingService.ClassAttr duty =
+                new ProductConfigGroundingService.ClassAttr();
+            duty.developerName = 'DutyRating';
+            duty.name = 'Duty Rating';
+            duty.dataType = 'Picklist';
+            duty.isRequired = false;
+            duty.isPriceImpacting = true;
+            duty.attributeId = '0tj000000000002';
+            duty.picklistId = dutyPicklistId;
+            cat.attributes.add(duty);
+
+            ProductConfigGroundingService.PickValue v1 =
+                new ProductConfigGroundingService.PickValue();
+            v1.valueId = '0v6000000000001'; v1.name = 'Standby'; v1.code = 'STBY';
+            v1.picklistId = dutyPicklistId;
+            cat.picklistValues.add(v1);
+            ProductConfigGroundingService.PickValue v2 =
+                new ProductConfigGroundingService.PickValue();
+            v2.valueId = '0v6000000000002'; v2.name = 'DataCenterContinuous'; v2.code = 'DCC';
+            v2.picklistId = dutyPicklistId;
+            cat.picklistValues.add(v2);
+            return cat;
+        }
+    }
+
+    // A valid-format Product2 Id (the stub reader ignores it) and a transient node ref.
+    private static final String PRODUCT_ID = '01t000000000001';
+    private static final String REF_LINE   = 'ref_abc123def456';
 
     // =====================================================================
     // Input guard
@@ -272,5 +328,102 @@ private class AgentAdvisorServiceTest {
             AgentAdvisorService.isGenericFailure('COP is continuous power.'));
         System.assertEquals(false,
             AgentAdvisorService.isGenericFailure(null));
+    }
+
+    // =====================================================================
+    // PRE-PERSIST agent selection + product context — Stage 4
+    // =====================================================================
+
+    @IsTest
+    static void prePersist_selectsProductAdvisor_withProductContext() {
+        // A transient ref_ line + a productId -> route to the PRE-PERSIST agent and ground on
+        // a PRODUCT context block resolved through ProductConfigGroundingService (mock reader).
+        CannedAgentGateway gw = new CannedAgentGateway('{"type":"Text","value":"ok"}', 'sess-p');
+        AgentAdvisorService.agentGateway = gw;
+        ProductConfigGroundingService.reader = new StubProductReader();
+
+        Test.startTest();
+        AgentAdvisorService.AgentAnswer a = AgentAdvisorService.askAgent(
+            'what duty rating suits a data center?', QUOTE_ID, REF_LINE, PRODUCT_ID, null);
+        Test.stopTest();
+
+        System.assertEquals(true, a.isSuccess, 'unexpected error: ' + a.errorMessage);
+        System.assertEquals(AgentAdvisorService.PREPERSIST_AGENT_API_NAME, gw.lastAgentApiName,
+            'pre-persist line must route to the Revenue_Product_Advisor agent');
+        // Product context: product id, product name, and the attribute summary must be present.
+        System.assert(gw.lastUserMessage.contains('productId=' + PRODUCT_ID), gw.lastUserMessage);
+        System.assert(gw.lastUserMessage.contains('productName=FESBA Generator Set'),
+            gw.lastUserMessage);
+        System.assert(gw.lastUserMessage.contains('DutyRating (Picklist)'), gw.lastUserMessage);
+        System.assert(gw.lastUserMessage.contains('DataCenterContinuous'), gw.lastUserMessage);
+        System.assert(gw.lastUserMessage.contains('requiredKW (Number)'), gw.lastUserMessage);
+        // The saved-line context keys must NOT appear on the pre-persist path.
+        System.assert(!gw.lastUserMessage.contains('quoteLineItemId='), gw.lastUserMessage);
+        System.assert(gw.lastUserMessage.contains('what duty rating suits a data center?'),
+            gw.lastUserMessage);
+    }
+
+    @IsTest
+    static void persistedLine_withProductId_selectsQuoteManagementAgent() {
+        // A persisted 0QL… line MUST use the saved-line agent + quote/line context even when
+        // a productId is also supplied — the existing behaviour is preserved byte-for-byte.
+        CannedAgentGateway gw = new CannedAgentGateway('{"type":"Text","value":"ok"}', 'sess-s');
+        AgentAdvisorService.agentGateway = gw;
+        // If the product path were wrongly taken, this reader would supply the context; it must not.
+        ProductConfigGroundingService.reader = new StubProductReader();
+
+        Test.startTest();
+        AgentAdvisorService.AgentAnswer a = AgentAdvisorService.askAgent(
+            'explain duty ratings', QUOTE_ID, QLI_ID, PRODUCT_ID, null);
+        Test.stopTest();
+
+        System.assertEquals(true, a.isSuccess, 'unexpected error: ' + a.errorMessage);
+        System.assertEquals(AgentAdvisorService.AGENT_API_NAME, gw.lastAgentApiName,
+            'a persisted 0QL line must route to the saved-line Revenue_Quote_Management agent');
+        System.assert(gw.lastUserMessage.contains('quoteLineItemId=' + QLI_ID), gw.lastUserMessage);
+        System.assert(!gw.lastUserMessage.contains('productId='),
+            'saved-line context must not carry a product block: ' + gw.lastUserMessage);
+    }
+
+    @IsTest
+    static void fourArgOverload_delegatesToSavedLineAgent() {
+        // The 4-arg overload (no productId) must behave like the saved-line path.
+        CannedAgentGateway gw = new CannedAgentGateway('{"type":"Text","value":"ok"}', 'sess-4');
+        AgentAdvisorService.agentGateway = gw;
+
+        Test.startTest();
+        AgentAdvisorService.AgentAnswer a =
+            AgentAdvisorService.askAgent('explain duty ratings', QUOTE_ID, QLI_ID, null);
+        Test.stopTest();
+
+        System.assertEquals(true, a.isSuccess, 'unexpected error: ' + a.errorMessage);
+        System.assertEquals(AgentAdvisorService.AGENT_API_NAME, gw.lastAgentApiName,
+            '4-arg overload delegates with productId=null -> saved-line agent');
+    }
+
+    @IsTest
+    static void helper_formatProductContext() {
+        // Build a synthetic catalog and assert the pure formatter's shape (no SOQL/reader).
+        ConfigEngineController.AttributesResult cat = new ConfigEngineController.AttributesResult();
+        cat.productName = 'FESBA Generator Set';
+        cat.hasConfigurableAttributes = true;
+        ConfigEngineController.AttributeOption kw = new ConfigEngineController.AttributeOption();
+        kw.developerName = 'requiredKW'; kw.dataType = 'Number'; kw.picklistValues = null;
+        ConfigEngineController.AttributeOption duty = new ConfigEngineController.AttributeOption();
+        duty.developerName = 'DutyRating'; duty.dataType = 'Picklist';
+        duty.picklistValues = new List<String>{ 'Standby', 'DataCenterContinuous' };
+        cat.attributes = new List<ConfigEngineController.AttributeOption>{ kw, duty };
+
+        String msg = AgentAdvisorService.formatProductContext('why?', PRODUCT_ID, cat);
+        System.assert(msg.startsWith('CONTEXT: '), msg);
+        System.assert(msg.contains('productId=' + PRODUCT_ID), msg);
+        System.assert(msg.contains('productName=FESBA Generator Set'), msg);
+        System.assert(msg.contains('requiredKW (Number)'), msg);
+        System.assert(msg.contains('DutyRating (Picklist): Standby, DataCenterContinuous'), msg);
+        System.assert(msg.endsWith('why?'), msg);
+
+        // Null catalog + blank product -> bare question, no CONTEXT prefix.
+        System.assertEquals('why?',
+            AgentAdvisorService.formatProductContext('why?', '', null));
     }
 }

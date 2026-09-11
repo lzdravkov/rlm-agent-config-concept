@@ -130,6 +130,36 @@ public with sharing class ConfigExtractionService {
     @TestVisible
     private static ConfigEngineController.AttributesResult groundingOverride = null;
 
+    /**
+     * Resolves the grounding catalog, mirroring the LWC's _isPrePersist routing so the
+     * pre-persist (catalog-launch) path and the saved-line path produce IDENTICAL catalogs.
+     *
+     * Source precedence:
+     *   1. groundingOverride (test seam) — returned verbatim when set, so tests stay
+     *      deterministic regardless of the line/product arguments.
+     *   2. PRE-PERSIST — the line is NOT a persisted 0QL… record (blank, or a transient
+     *      ref_ configurator node) AND a root productId is supplied → ground off the product
+     *      via ProductConfigGroundingService.getAttributesForProduct. That service returns
+     *      the SAME AttributesResult shape and the SAME `Name ?? Code` labels as the
+     *      saved-line path (proven zero-drift), so downstream validation is unchanged.
+     *   3. SAVED LINE — a persisted 0QL… id → the existing ConfigEngineController.getAttributes.
+     *
+     * Both delegates are never-throw + return a structured AttributesResult (errors surface
+     * in errorMessage), so this method preserves the entry point's never-throws contract.
+     */
+    private static ConfigEngineController.AttributesResult resolveCatalog(
+            String quoteLineItemId, String productId) {
+        if (groundingOverride != null) {
+            return groundingOverride;
+        }
+        Boolean isPersistedLine =
+            String.isNotBlank(quoteLineItemId) && quoteLineItemId.startsWith('0QL');
+        if (!isPersistedLine && String.isNotBlank(productId)) {
+            return ProductConfigGroundingService.getAttributesForProduct(productId);
+        }
+        return ConfigEngineController.getAttributes(quoteLineItemId);
+    }
+
     // =========================================================================
     // DTOs — every field the LWC reads must be @AuraEnabled
     // =========================================================================
@@ -172,18 +202,40 @@ public with sharing class ConfigExtractionService {
     // ENTRY POINT
     // =========================================================================
     /**
+     * Backward-compatible 2-arg overload (productId = null → saved-line grounding).
+     *
+     * NOT @AuraEnabled: Apex allows only ONE overload of a method to carry the annotation,
+     * and the LWC always calls the 3-arg form. This overload exists so pre-existing Apex
+     * callers and the 24 existing ConfigExtractionServiceTest cases compile unchanged.
+     *
+     * @param requirementText  the rep's free-text requirement
+     * @param quoteLineItemId  the root configurable QLI Id (grounding source)
+     * @return ExtractionResult — delegates to the 3-arg form with no product grounding
+     */
+    public static ExtractionResult extractConfiguration(String requirementText,
+                                                        String quoteLineItemId) {
+        return extractConfiguration(requirementText, quoteLineItemId, null);
+    }
+
+    /**
      * Extracts a validated, proposed attribute configuration from free text.
      *
      * cacheable MUST be false: the LLM callout is illegal on a cacheable method, and
      * the output is non-deterministic per free-text input. No DML is performed.
      *
      * @param requirementText  the rep's free-text requirement
-     * @param quoteLineItemId  the root configurable QLI Id (grounding source)
+     * @param quoteLineItemId  the root configurable QLI Id (grounding source). On the
+     *                         pre-persist catalog path this is a transient ref_ node id.
+     * @param productId        pre-persist grounding source (S01_DataManager.rootProductId).
+     *                         Non-null on the catalog-launch path; when the line is not a
+     *                         persisted 0QL… record the catalog is grounded off this product
+     *                         instead of the (nonexistent) saved line. Null on the saved path.
      * @return ExtractionResult — always a structured result, never a thrown exception
      */
     @AuraEnabled(cacheable=false)
     public static ExtractionResult extractConfiguration(String requirementText,
-                                                        String quoteLineItemId) {
+                                                        String quoteLineItemId,
+                                                        String productId) {
         ExtractionResult r = new ExtractionResult();
 
         // --- 1. Input guards (return-with-error, do not throw) -----------------
@@ -192,17 +244,18 @@ public with sharing class ConfigExtractionService {
             r.errorMessage = 'requirementText is required';
             return r;
         }
-        if (String.isBlank(quoteLineItemId)) {
+        // We need SOMETHING to ground on: either a line id (persisted or transient ref_)
+        // or a root productId (pre-persist catalog launch). Only both-blank is an error.
+        if (String.isBlank(quoteLineItemId) && String.isBlank(productId)) {
             r.isSuccess = false;
-            r.errorMessage = 'quoteLineItemId is required';
+            r.errorMessage = 'quoteLineItemId or productId is required';
             return r;
         }
 
         try {
-            // --- 2. Grounding: one call into the existing controller ----------
-            ConfigEngineController.AttributesResult catalog = (groundingOverride != null)
-                ? groundingOverride
-                : ConfigEngineController.getAttributes(quoteLineItemId);
+            // --- 2. Grounding: resolve saved-line vs pre-persist product catalog ----
+            ConfigEngineController.AttributesResult catalog =
+                resolveCatalog(quoteLineItemId, productId);
 
             // Short-circuit: never call the LLM for a line we cannot ground.
             if (catalog == null) {

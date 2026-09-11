@@ -108,13 +108,16 @@ private class ConfigExtractionServiceTest {
 
     @IsTest
     static void blankQli_returnsError() {
+        // With BOTH the line id and productId blank there is nothing to ground on. The
+        // guard message widened when the pre-persist productId path was added (a blank line
+        // is now legal as long as a productId is supplied — see prePersist_* tests below).
         Test.startTest();
         ConfigExtractionService.ExtractionResult r =
             ConfigExtractionService.extractConfiguration('1500 kW', '');
         Test.stopTest();
 
         System.assertEquals(false, r.isSuccess);
-        System.assertEquals('quoteLineItemId is required', r.errorMessage);
+        System.assertEquals('quoteLineItemId or productId is required', r.errorMessage);
     }
 
     // =====================================================================
@@ -571,5 +574,179 @@ private class ConfigExtractionServiceTest {
             'requirement text embedded');
         System.assert(prompt.contains('CONFIGURE') && prompt.contains('ASK'),
             'prompt instructs the model to classify intent');
+    }
+
+    // =====================================================================
+    // PRE-PERSIST grounding (productId path) — Stage 2
+    // =====================================================================
+    // These cover resolveCatalog's routing: a NON-persisted line (blank or a transient
+    // ref_ node) with a productId grounds off ProductConfigGroundingService, while a
+    // persisted 0QL… line keeps using ConfigEngineController.getAttributes. The product
+    // reader is injected through ProductConfigGroundingService's @TestVisible seam so no
+    // live catalog data is needed and the routing decision is observable.
+
+    // A valid-format Product2 Id that need not exist — the mock reader ignores it.
+    private static final String FAKE_PRODUCT = '01t000000000001';
+
+    // Tracks whether the product reader was consulted, so a test can assert that the
+    // persisted-line path does NOT route through the product grounding service.
+    private static Boolean productReaderCalled = false;
+
+    /**
+     * Canned product catalog reader. Returns a controlled ProductCatalog (one Number attr
+     * and one Picklist attr) regardless of productId, and records that it was called.
+     */
+    private class StubProductReader implements ProductConfigGroundingService.CatalogReader {
+        public ProductConfigGroundingService.ProductCatalog read(String productId) {
+            productReaderCalled = true;
+            return prePersistCatalog();
+        }
+    }
+
+    /** Builds a minimal configurable ProductCatalog: requiredKW (Number) + DutyRating (Picklist). */
+    private static ProductConfigGroundingService.ProductCatalog prePersistCatalog() {
+        ProductConfigGroundingService.ProductCatalog cat =
+            new ProductConfigGroundingService.ProductCatalog();
+        cat.productName = 'FESBA Generator Set';
+        cat.basedOnId = '11B000000000001'; // non-null => configurable
+
+        ProductConfigGroundingService.ClassAttr kw = new ProductConfigGroundingService.ClassAttr();
+        kw.developerName = 'requiredKW';
+        kw.name = 'Required KW';
+        kw.dataType = 'Number';
+        kw.isRequired = false;
+        kw.isPriceImpacting = true;
+        kw.attributeId = '0tj000000000001';
+        kw.picklistId = null;
+        cat.attributes.add(kw);
+
+        Id dutyPicklistId = '0v5000000000001';
+        ProductConfigGroundingService.ClassAttr duty = new ProductConfigGroundingService.ClassAttr();
+        duty.developerName = 'DutyRating';
+        duty.name = 'Duty Rating';
+        duty.dataType = 'Picklist';
+        duty.isRequired = false;
+        duty.isPriceImpacting = true;
+        duty.attributeId = '0tj000000000002';
+        duty.picklistId = dutyPicklistId;
+        cat.attributes.add(duty);
+
+        // Two legal picklist values (Name label; Code fallback path is covered in
+        // ProductConfigGroundingServiceTest, so plain Names here).
+        cat.picklistValues.add(pickVal('0v6000000000001', 'Standby', 'STBY', dutyPicklistId));
+        cat.picklistValues.add(pickVal('0v6000000000002', 'DataCenterContinuous', 'DCC', dutyPicklistId));
+        return cat;
+    }
+
+    private static ProductConfigGroundingService.PickValue pickVal(
+            Id valueId, String name, String code, Id picklistId) {
+        ProductConfigGroundingService.PickValue v = new ProductConfigGroundingService.PickValue();
+        v.valueId = valueId;
+        v.name = name;
+        v.code = code;
+        v.picklistId = picklistId;
+        return v;
+    }
+
+    @IsTest
+    static void prePersist_refLine_withProduct_groundsOffProduct() {
+        // Transient ref_ line + productId, NO groundingOverride -> resolveCatalog must route
+        // through ProductConfigGroundingService.getAttributesForProduct (the product reader).
+        ConfigExtractionService.groundingOverride = null;
+        ProductConfigGroundingService.reader = new StubProductReader();
+        productReaderCalled = false;
+        // A canned LLM extraction that maps a value present ONLY in the product catalog,
+        // proving the product catalog (not the saved line) drove grounding + validation.
+        ConfigExtractionService.llmGateway = new CannedLlmGateway(
+            '{"intent":"CONFIGURE","fields":{"requiredKW":"1500","DutyRating":"DataCenterContinuous"}}');
+
+        Test.startTest();
+        ConfigExtractionService.ExtractionResult r = ConfigExtractionService.extractConfiguration(
+            '~1500 kW data center continuous', 'ref_abc123def456', FAKE_PRODUCT);
+        Test.stopTest();
+
+        System.assertEquals(true, r.isSuccess, 'pre-persist ref_ line grounds off the product');
+        System.assertEquals(true, productReaderCalled, 'product reader must be consulted');
+        System.assertEquals('FESBA Generator Set', r.productName, 'product name echoed');
+        System.assert(!r.proposedFields.isEmpty(), 'fields mapped from the product catalog');
+        Map<String, String> byDev = new Map<String, String>();
+        for (ConfigExtractionService.ProposedField f : r.proposedFields) {
+            byDev.put(f.developerName, f.proposedValue);
+        }
+        System.assertEquals('DataCenterContinuous', byDev.get('DutyRating'),
+            'a value that exists only in the product catalog validated -> product grounded');
+    }
+
+    @IsTest
+    static void prePersist_blankLine_withProduct_grounds() {
+        // Blank line id but a productId present: the widened guard admits it and the product
+        // path grounds it (catalog-launch before any transient node id has been assigned).
+        ConfigExtractionService.groundingOverride = null;
+        ProductConfigGroundingService.reader = new StubProductReader();
+        productReaderCalled = false;
+        ConfigExtractionService.llmGateway = new CannedLlmGateway(
+            '{"intent":"CONFIGURE","fields":{"requiredKW":"2000"}}');
+
+        Test.startTest();
+        ConfigExtractionService.ExtractionResult r =
+            ConfigExtractionService.extractConfiguration('2000 kW', '', FAKE_PRODUCT);
+        Test.stopTest();
+
+        System.assertEquals(true, r.isSuccess, 'blank line + productId grounds off the product');
+        System.assertEquals(true, productReaderCalled);
+        System.assertEquals('2000', firstValue(r, 'requiredKW'));
+    }
+
+    @IsTest
+    static void persistedLine_withProductId_usesSavedPath_notProduct() {
+        // A persisted 0QL… line MUST keep using ConfigEngineController.getAttributes even
+        // when a productId is also supplied — the product reader must NOT be consulted.
+        ConfigExtractionService.groundingOverride = null;
+        ProductConfigGroundingService.reader = new StubProductReader();
+        productReaderCalled = false;
+        ConfigExtractionService.llmGateway =
+            new CannedLlmGateway('{"requiredKW":"1500"}'); // would succeed if reached
+
+        Test.startTest();
+        ConfigExtractionService.ExtractionResult r =
+            ConfigExtractionService.extractConfiguration('~1500 kW', FAKE_QLI, FAKE_PRODUCT);
+        Test.stopTest();
+
+        System.assertEquals(false, productReaderCalled,
+            'a persisted 0QL line must bypass the product reader (saved-line grounding)');
+        // FAKE_QLI resolves to no record -> non-configurable short-circuit before the LLM.
+        System.assertEquals(false, r.isSuccess);
+    }
+
+    @IsTest
+    static void twoArgOverload_delegatesWithNullProduct() {
+        // The non-annotated 2-arg overload must behave exactly like the 3-arg form with a
+        // null productId. With groundingOverride set (saved-line semantics), both succeed.
+        ConfigExtractionService.groundingOverride = syntheticCatalog();
+        ConfigExtractionService.llmGateway = new CannedLlmGateway(
+            '{"intent":"CONFIGURE","fields":{"requiredKW":"1500"}}');
+
+        Test.startTest();
+        ConfigExtractionService.ExtractionResult twoArg =
+            ConfigExtractionService.extractConfiguration('1500 kW', FAKE_QLI);
+        ConfigExtractionService.ExtractionResult threeArg =
+            ConfigExtractionService.extractConfiguration('1500 kW', FAKE_QLI, null);
+        Test.stopTest();
+
+        System.assertEquals(true, twoArg.isSuccess);
+        System.assertEquals(true, threeArg.isSuccess);
+        System.assertEquals(twoArg.extractionMethod, threeArg.extractionMethod,
+            '2-arg overload delegates to the 3-arg form with productId=null');
+        System.assertEquals(firstValue(twoArg, 'requiredKW'), firstValue(threeArg, 'requiredKW'));
+    }
+
+    /** First proposedValue for a developerName, or null. */
+    private static String firstValue(ConfigExtractionService.ExtractionResult r, String dev) {
+        for (ConfigExtractionService.ProposedField f : r.proposedFields) {
+            if (f.developerName == dev) {
+                return f.proposedValue;
+            }
+        }
+        return null;
     }
 }
