@@ -1,0 +1,36 @@
+<template>
+    <lightning-card title="Config Refresh Probe (throwaway)" icon-name="utility:bug">
+        <div class="slds-p-horizontal_medium slds-p-bottom_medium">
+            <p class="slds-text-body_small slds-text-color_weak slds-m-bottom_x-small">
+                Diagnostic only. Subscribes to the configurator LMS channel and lets
+                us publish candidate reload payloads. Line: {quoteLineItemId}
+            </p>
+
+            <!-- Publish candidate reload/refresh payloads on the managed channel -->
+            <div class="slds-m-bottom_small">
+                <lightning-button label="refresh" class="slds-m-right_xx-small slds-m-bottom_xx-small"
+                    onclick={handlePublishRefresh}></lightning-button>
+                <lightning-button label="reload" class="slds-m-right_xx-small slds-m-bottom_xx-small"
+                    onclick={handlePublishReload}></lightning-button>
+                <lightning-button label="reprice" class="slds-m-right_xx-small slds-m-bottom_xx-small"
+                    onclick={handlePublishReprice}></lightning-button>
+                <lightning-button label="valueChanged" class="slds-m-right_xx-small slds-m-bottom_xx-small"
+                    onclick={handlePublishValueChanged}></lightning-button>
+                <lightning-button label="transactionUpdated" class="slds-m-right_xx-small slds-m-bottom_xx-small"
+                    onclick={handlePublishTransactionUpdated}></lightning-button>
+                <lightning-button label="echo last inbound" class="slds-m-right_xx-small slds-m-bottom_xx-small"
+                    onclick={handleEchoLast}></lightning-button>
+                <lightning-button label="clear log" class="slds-m-right_xx-small slds-m-bottom_xx-small"
+                    onclick={handleClear}></lightning-button>
+            </div>
+
+            <!-- Message log, newest first. IN = received from managed panel,
+                 OUT = we published, PROBE/ERR = probe status. -->
+            <div class="probe-log slds-box slds-theme_shade">
+                <template for:each={logEntries} for:item="e">
+                    <p key={e.key} class="slds-text-font_monospace log-line">{e.line}</p>
+                </template>
+            </div>
+        </div>
+    </lightning-card>
+</template>

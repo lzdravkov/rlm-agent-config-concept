@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OAuth scopes for RevenueAgent_Headless (metadata token names, per this org's
+  valid list surfaced by the deploy validator):
+    - Chatbot        : invoke Agentforce agents via the Agent API (runtime: chatbot_api).
+    - Api            : general REST API access (runtime: api).
+    - SFApiPlatform  : Salesforce API Platform scope used by the Agent API (runtime: sfap_api).
+    - RefreshToken   : offline access; harmless for client_credentials, useful if
+                       Auth Code is later enabled.
+  Full valid list for this org: Basic, OfflineAccess, DataCloudUserClaims, Email,
+  Address, CDPSegment, Chatbot, CustomApplications, Full, Profile, CDP, CDPProfile,
+  RefreshToken, Phone, PwdlessLogin, Interaction, Pardot, CDPIngest,
+  CDPIdentityResolution, CustomPermissions, ForgotPassword, UserRegistration, OpenID,
+  Chatter, Wave, SFApiPlatform, SCRT, Web, EinsteinGPT, Lightning, Content,
+  CDPCalculatedInsight, Eclair, Api, MCP, CDPQuery.
+-->
+<ExtlClntAppOauthSettings xmlns="http://soap.sforce.com/2006/04/metadata">
+    <commaSeparatedOauthScopes>Chatbot, Api, SFApiPlatform, RefreshToken</commaSeparatedOauthScopes>
+    <externalClientApplication>RevenueAgent_Headless</externalClientApplication>
+    <label>Revenue Agent Headless</label>
+</ExtlClntAppOauthSettings>

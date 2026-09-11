@@ -1,0 +1,93 @@
+<template>
+    <lightning-card title="Spike: Apply Product Configuration" icon-name="standard:product">
+        <div class="slds-p-horizontal_medium">
+
+            <!-- Context echo so the tester can confirm the Flow passed the ids -->
+            <p class="slds-text-body_small slds-text-color_weak">
+                Quote: {quoteId} &nbsp;|&nbsp; Line: {quoteLineItemId}
+            </p>
+
+            <!-- Single-attribute input -->
+            <lightning-input
+                label="Attribute developerName"
+                value={attributeName}
+                onchange={handleAttrNameChange}>
+            </lightning-input>
+
+            <lightning-input
+                label="Value to apply"
+                value={attributeValue}
+                onchange={handleValueChange}>
+            </lightning-input>
+
+            <div class="slds-m-top_small">
+                <lightning-button
+                    variant="brand"
+                    label="Apply Configuration"
+                    onclick={handleApply}
+                    disabled={isLoading}>
+                </lightning-button>
+            </div>
+
+            <!-- Spinner while the (synchronous) PST round-trip runs -->
+            <template if:true={isLoading}>
+                <lightning-spinner alternative-text="Applying..." size="small"></lightning-spinner>
+            </template>
+
+            <!-- Transport-level error (thrown exception) -->
+            <template if:true={errorMessage}>
+                <div class="slds-text-color_error slds-m-top_small">
+                    Error: {errorMessage}
+                </div>
+            </template>
+
+            <!-- Structured result -->
+            <template if:true={hasResult}>
+                <div class="slds-box slds-m-top_medium">
+                    <template if:true={succeeded}>
+                        <p class="slds-text-heading_small slds-text-color_success">
+                            Configuration applied.
+                        </p>
+                        <p>Quote grand total (after): {quoteGrandTotalAfter}</p>
+                        <p>Grand total delta: {grandTotalDelta}</p>
+                    </template>
+
+                    <template if:false={succeeded}>
+                        <p class="slds-text-color_error">
+                            Apply failed: {resultError}
+                        </p>
+                    </template>
+
+                    <!-- Requested vs persisted diff (surfaces silent corrections) -->
+                    <template if:true={diffs.length}>
+                        <p class="slds-text-title_caps slds-m-top_small">Attribute diff</p>
+                        <table class="slds-table slds-table_bordered slds-table_cell-buffer">
+                            <thead>
+                                <tr class="slds-line-height_reset">
+                                    <th scope="col">Attribute</th>
+                                    <th scope="col">Requested</th>
+                                    <th scope="col">Persisted</th>
+                                    <th scope="col">Corrected?</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template for:each={diffs} for:item="d">
+                                    <tr key={d.developerName}>
+                                        <td>{d.developerName}</td>
+                                        <td>{d.requested}</td>
+                                        <td>{d.actual}</td>
+                                        <td>
+                                            <template if:true={d.changed}>Yes</template>
+                                            <template if:false={d.changed}>No</template>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </template>
+                </div>
+            </template>
+
+        </div>
+    </lightning-card>
+</template>

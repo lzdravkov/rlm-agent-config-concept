@@ -1,0 +1,345 @@
+<template>
+    <lightning-card title="Conversational Configuration" icon-name="standard:live_chat">
+        <div class="slds-p-horizontal_medium slds-p-bottom_medium chat-panel">
+
+            <!-- Context echo (self-diagnosis, like the spike) -->
+            <p class="slds-text-body_small slds-text-color_weak slds-m-bottom_x-small">
+                Quote: {quoteId} &nbsp;|&nbsp; Line: {quoteLineItemId}
+            </p>
+
+            <!-- ===================== LOADING_CATALOG ===================== -->
+            <template if:true={isLoadingCatalog}>
+                <div class="slds-align_absolute-center slds-p-vertical_large">
+                    <lightning-spinner alternative-text="Loading catalog..." size="small"></lightning-spinner>
+                    <span class="slds-m-left_small slds-text-color_weak">Loading product attributes...</span>
+                </div>
+            </template>
+
+            <!-- ===================== NON_CONFIGURABLE ==================== -->
+            <template if:true={isNonConfigurable}>
+                <div class="slds-box slds-theme_shade slds-m-top_small">
+                    <lightning-icon icon-name="utility:info" size="x-small"
+                        class="slds-m-right_x-small"></lightning-icon>
+                    <span class="slds-text-color_weak">{nonConfigMessage}</span>
+                </div>
+            </template>
+
+            <!-- ===================== CONVERSATION ======================== -->
+            <template if:false={isLoadingCatalog}>
+                <template if:false={isNonConfigurable}>
+
+                    <!-- NOTE (2026-07-17, per user feedback): The "Current configuration"
+                         summary chips that previously rendered here have been intentionally
+                         REMOVED for now. Rationale: the native RLM configurator's attribute
+                         panel (rendered below/beside this component in the Flow screen) is the
+                         single source of truth for the line's current attribute values, so
+                         echoing them here duplicated that UI and risked showing a stale copy
+                         relative to the managed dataManager's in-memory graph. The underlying
+                         data still loads (getSavedConfiguration → currentConfigItems) and can
+                         be re-surfaced later if we decide the chat panel needs its own summary.
+                         See configChatPanel.js: currentConfigItems / hasCurrentConfig. -->
+
+                    <!-- Message transcript (chat bubbles). aria-live/role=log so
+                         screen readers announce newly appended assistant replies and
+                         the in-flight progress line as they arrive. -->
+                    <div class="conversation slds-m-bottom_small"
+                         aria-live="polite" aria-atomic="false" role="log">
+                        <template for:each={messages} for:item="m">
+                            <div key={m.id} class={m.cssClass}>
+                                <div class={m.bubbleClass}>
+                                    <p class="slds-text-title_caps slds-text-color_weak msg-role">{m.roleLabel}</p>
+                                    <p class="msg-text">{m.text}</p>
+                                </div>
+                            </div>
+                        </template>
+
+                        <!-- In-flight progress indicator (EXTRACTING / APPLYING) -->
+                        <template if:true={isBusy}>
+                            <div class="msg-row msg-row_assistant">
+                                <div class="msg-bubble msg-bubble_assistant slds-p-around_x-small">
+                                    <div class="slds-grid slds-grid_vertical-align-center">
+                                        <lightning-spinner alternative-text="Working..." size="x-small"
+                                            variant="brand" class="inline-spinner"></lightning-spinner>
+                                        <span class="slds-m-left_small slds-text-color_weak">{busyLabel}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- ===================== REVIEW CARD ===================== -->
+                    <template if:true={showReviewCard}>
+                        <div class="slds-box slds-m-bottom_small review-card">
+                            <p class="slds-text-heading_small slds-m-bottom_x-small">{reviewHeader}</p>
+                            <p class="slds-text-body_small slds-text-color_weak slds-m-bottom_small">
+                                Toggle each field to include or reject it, edit any value, then Apply.
+                                Invalid rows are excluded by default. Apply sends these changes to the
+                                configurator to apply and reprice; use the configurator's Save to persist.
+                            </p>
+
+                            <template for:each={reviewFields} for:item="f">
+                                <div key={f.key} class="review-row slds-p-around_x-small slds-m-bottom_x-small">
+                                    <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
+                                        <div class="slds-grid slds-grid_vertical-align-center">
+                                            <lightning-input
+                                                type="toggle"
+                                                label={f.label}
+                                                data-key={f.key}
+                                                checked={f.included}
+                                                message-toggle-active="Include"
+                                                message-toggle-inactive="Reject"
+                                                onchange={handleIncludeToggle}
+                                                variant="label-hidden"
+                                                class="slds-m-right_small">
+                                            </lightning-input>
+                                            <span class="slds-text-body_regular">{f.label}</span>
+                                            <template if:true={f.isPriceImpacting}>
+                                                <lightning-icon icon-name="utility:moneybag" size="xx-small"
+                                                    alternative-text="Price impacting"
+                                                    title="Price impacting"
+                                                    class="slds-m-left_xx-small"></lightning-icon>
+                                            </template>
+                                        </div>
+                                        <span class="slds-text-body_small slds-text-color_weak">
+                                            {f.developerName} &middot; {f.confidence}
+                                        </span>
+                                    </div>
+
+                                    <!-- dataType-appropriate editor -->
+                                    <div class="slds-m-top_xx-small">
+                                        <template if:true={f.isPicklist}>
+                                            <lightning-combobox
+                                                label="Value"
+                                                variant="label-hidden"
+                                                data-key={f.key}
+                                                value={f.value}
+                                                options={f.comboOptions}
+                                                onchange={handleValueChange}
+                                                placeholder="Select a value">
+                                            </lightning-combobox>
+                                        </template>
+                                        <template if:true={f.isNumber}>
+                                            <lightning-input
+                                                type="number"
+                                                label="Value"
+                                                variant="label-hidden"
+                                                data-key={f.key}
+                                                value={f.value}
+                                                onchange={handleValueChange}>
+                                            </lightning-input>
+                                        </template>
+                                        <template if:true={f.isCheckbox}>
+                                            <lightning-input
+                                                type="checkbox"
+                                                label="Enabled"
+                                                data-key={f.key}
+                                                checked={f.checkboxValue}
+                                                onchange={handleCheckboxValueChange}>
+                                            </lightning-input>
+                                        </template>
+                                        <template if:true={f.isText}>
+                                            <lightning-input
+                                                type="text"
+                                                label="Value"
+                                                variant="label-hidden"
+                                                data-key={f.key}
+                                                value={f.value}
+                                                onchange={handleValueChange}>
+                                            </lightning-input>
+                                        </template>
+                                    </div>
+
+                                    <!-- per-field note / invalid flag -->
+                                    <div class="slds-m-top_xxx-small">
+                                        <template if:false={f.isValid}>
+                                            <span class="slds-text-color_error slds-text-body_small">
+                                                <lightning-icon icon-name="utility:warning" size="xx-small"
+                                                    class="slds-m-right_xx-small"></lightning-icon>
+                                                {f.note}
+                                            </span>
+                                        </template>
+                                        <template if:true={f.isValid}>
+                                            <span class="slds-text-color_weak slds-text-body_small">{f.note}</span>
+                                        </template>
+                                    </div>
+                                </div>
+                            </template>
+
+                            <!-- ignored / unmapped notes -->
+                            <template if:true={hasUnmappedNotes}>
+                                <div class="slds-m-top_small">
+                                    <span class="slds-text-title_caps slds-text-color_weak">Ignored</span>
+                                    <ul class="slds-list_dotted slds-m-top_xxx-small">
+                                        <template for:each={unmappedNotes} for:item="n">
+                                            <li key={n.id} class="slds-text-body_small slds-text-color_weak">{n.text}</li>
+                                        </template>
+                                    </ul>
+                                </div>
+                            </template>
+
+                            <!-- Warn when an included row is still invalid: it will
+                                 NOT be submitted (filtered in handleApply), and if it's
+                                 the only included row Apply stays disabled. -->
+                            <template if:true={hasIncludedInvalid}>
+                                <div class="slds-text-color_error slds-text-body_small slds-m-top_small">
+                                    <lightning-icon icon-name="utility:warning" size="xx-small"
+                                        class="slds-m-right_xx-small"></lightning-icon>
+                                    One or more included fields still have an invalid value and
+                                    won't be applied. Fix or reject them.
+                                </div>
+                            </template>
+
+                            <!-- actions -->
+                            <div class="slds-m-top_medium slds-grid slds-grid_align-end">
+                                <lightning-button
+                                    label="Discard"
+                                    onclick={handleDiscard}
+                                    class="slds-m-right_x-small"
+                                    disabled={isBusy}>
+                                </lightning-button>
+                                <lightning-button
+                                    variant="brand"
+                                    label="Apply"
+                                    title="Send the included selections to the configurator to apply and reprice"
+                                    onclick={handleApply}
+                                    disabled={applyDisabled}>
+                                </lightning-button>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Standalone "Ignored" notes when there is no review card
+                         (e.g. extraction succeeded but mapped zero fields). Mirrors
+                         the in-card list so "See the ignored items below" always
+                         points at something visible. -->
+                    <template if:true={showStandaloneNotes}>
+                        <div class="slds-box slds-m-bottom_small">
+                            <span class="slds-text-title_caps slds-text-color_weak">Ignored</span>
+                            <ul class="slds-list_dotted slds-m-top_xxx-small">
+                                <template for:each={unmappedNotes} for:item="n">
+                                    <li key={n.id} class="slds-text-body_small slds-text-color_weak">{n.text}</li>
+                                </template>
+                            </ul>
+                        </div>
+                    </template>
+
+                    <!-- ===================== RESULT CARD (LMS confirmation) =====================
+                         The apply path now PUBLISHES `valueChanged` into the managed Data
+                         Manager (fire-and-forget) instead of the old PST write, so there is
+                         no synchronous price delta / requested-vs-persisted diff to show.
+                         The native configurator panel updates + reprices live and is the
+                         source of truth for the resulting values and price. This card just
+                         confirms what was pushed. See configChatPanel.js header for the full
+                         rationale (2026-07-17 re-architecture). -->
+                    <template if:true={showResultCard}>
+                        <div class="slds-box slds-theme_success-texture slds-m-bottom_small result-card">
+                            <p class="slds-text-heading_small slds-text-color_success slds-m-bottom_x-small">
+                                Sent to the configurator
+                            </p>
+                            <p class="slds-text-body_small slds-text-color_weak slds-m-bottom_small">
+                                If the configurator is open on this line, it will apply these
+                                changes and reprice. Confirm the updated values and price in the
+                                configurator panel, then use its Save to persist. (Changes are
+                                sent to the configurator, not saved directly by this panel.)
+                            </p>
+
+                            <ul class="slds-list_dotted">
+                                <template for:each={appliedItems} for:item="a">
+                                    <li key={a.id} class="slds-text-body_regular">
+                                        <span class="slds-text-title_caps slds-text-color_weak">{a.label}:</span>
+                                        &nbsp;{a.value}
+                                        <template if:true={a.isPriceImpacting}>
+                                            <lightning-icon icon-name="utility:moneybag" size="xx-small"
+                                                alternative-text="Price impacting"
+                                                title="Price impacting"
+                                                class="slds-m-left_xx-small"></lightning-icon>
+                                        </template>
+                                    </li>
+                                </template>
+                            </ul>
+
+                            <template if:true={anyAppliedPriceImpacting}>
+                                <p class="slds-text-body_small slds-text-color_weak slds-m-top_small">
+                                    <lightning-icon icon-name="utility:info" size="xx-small"
+                                        class="slds-m-right_xx-small"></lightning-icon>
+                                    One or more changes affect price — watch the configurator's
+                                    total update.
+                                </p>
+                            </template>
+
+                            <div class="slds-m-top_medium slds-grid slds-grid_align-end">
+                                <lightning-button
+                                    variant="brand"
+                                    label="Continue"
+                                    onclick={handleContinue}>
+                                </lightning-button>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- ===================== RETRY (extraction error) ===================== -->
+                    <template if:true={extractionErrorMessage}>
+                        <div class="slds-m-bottom_small">
+                            <lightning-button
+                                label="Retry extraction"
+                                icon-name="utility:refresh"
+                                onclick={handleRetry}
+                                disabled={isBusy}>
+                            </lightning-button>
+                        </div>
+                    </template>
+
+                    <!-- ===================== AUTO-APPLY MODE TOGGLE =====================
+                         Rep-controllable mode switch. Seeded from the Flow-set
+                         `autoApplyDefault` in connectedCallback; governs how the NEXT
+                         extraction result is handled (auto-publish vs. review card).
+                         A clean, high-confidence proposal is applied automatically when
+                         ON; anything invalid/ambiguous/low-confidence still drops to the
+                         review card, so the safety guarantees are unchanged. -->
+                    <template if:true={showAutoApplyToggle}>
+                        <div class="slds-m-bottom_small auto-apply-toggle">
+                            <lightning-input
+                                type="toggle"
+                                label="Auto-apply changes"
+                                message-toggle-active="On — a clean proposal is applied automatically"
+                                message-toggle-inactive="Off — review each proposal before applying"
+                                checked={autoApply}
+                                onchange={handleAutoApplyToggle}
+                                disabled={isBusy}>
+                            </lightning-input>
+                        </div>
+                    </template>
+
+                    <!-- ===================== COMPOSER ===================== -->
+                    <template if:true={showComposer}>
+                        <div class="slds-grid slds-grid_vertical-align-end composer">
+                            <div class="slds-col slds-grow">
+                                <lightning-input
+                                    type="text"
+                                    label="Describe your requirement"
+                                    variant="label-hidden"
+                                    placeholder="e.g. ~1500 kW, data-center continuous duty, low-voltage"
+                                    value={requirementText}
+                                    onchange={handleInputChange}
+                                    onkeyup={handleInputKeyup}
+                                    disabled={isBusy}>
+                                </lightning-input>
+                            </div>
+                            <div class="slds-col slds-no-flex slds-m-left_x-small">
+                                <lightning-button
+                                    variant="brand"
+                                    label="Send"
+                                    icon-name="utility:send"
+                                    onclick={handleSend}
+                                    disabled={sendDisabled}>
+                                </lightning-button>
+                            </div>
+                        </div>
+                    </template>
+
+                </template>
+            </template>
+
+        </div>
+    </lightning-card>
+</template>

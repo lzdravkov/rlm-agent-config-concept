@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Configurable OAuth policies for RevenueAgent_Headless.
+  Enables the Client Credentials flow (server-to-server) for the Agent API path.
+
+  IMPORTANT — final step you must complete in the UI:
+    The Client Credentials "Run As" integration user CANNOT be set via this
+    metadata (it references a specific User record and is org-specific). After
+    deploy, go to:
+      Setup -> External Client App Manager -> Revenue Agent Headless
+        -> Policies -> OAuth Policies -> Client Credentials Flow
+        -> set "Run As" to a dedicated integration user with access to the agent.
+
+  isClientCredentialsFlowEnabled: turns on the client_credentials grant.
+  (IP/refresh-token/session policies live in the separate .ecaPlcy file, not here.)
+-->
+<ExtlClntAppOauthConfigurablePolicies xmlns="http://soap.sforce.com/2006/04/metadata">
+    <externalClientApplication>RevenueAgent_Headless</externalClientApplication>
+    <label>Revenue Agent Headless</label>
+    <isClientCredentialsFlowEnabled>true</isClientCredentialsFlowEnabled>
+    <isTokenExchangeFlowEnabled>false</isTokenExchangeFlowEnabled>
+</ExtlClntAppOauthConfigurablePolicies>

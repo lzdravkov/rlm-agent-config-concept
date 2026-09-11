@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>67.0</apiVersion>
+    <isExposed>true</isExposed>
+    <targets>
+        <target>lightning__FlowScreen</target>
+    </targets>
+    <targetConfigs>
+        <targetConfig targets="lightning__FlowScreen">
+            <!--
+                SAME bindings as spikeConfigApply so this drops into
+                RenderDraw_Product_Configurator_Flow the same way. Both ids arrive
+                from Flow variables; no @api outputs are needed because all state is
+                persisted in the org and re-read on apply.
+            -->
+            <property name="quoteId" type="String" label="Quote Id"
+                      description="Id of the parent Quote (required by the save/reprice engine)."/>
+            <property name="quoteLineItemId" type="String" label="Quote Line Item Id"
+                      description="Id of the root configurable QuoteLineItem being configured."/>
+            <!--
+                AUTO-APPLY default (2026-07-17). Sets the STARTING mode of the in-panel
+                Auto-apply toggle. When true, a clean, high-confidence proposal is sent to
+                the configurator automatically without a manual Apply click; the rep can
+                still flip the toggle off per session. When false (default), the rep reviews
+                and clicks Apply as before. Auto-apply always degrades to the review card
+                when anything is invalid, ambiguous, or came from the keyword fallback.
+            -->
+            <property name="autoApplyDefault" type="Boolean" default="false"
+                      label="Auto-apply changes by default"
+                      description="If checked, a clean proposal is applied automatically without a manual Apply click. The rep can toggle this off in the panel. Invalid/ambiguous/low-confidence proposals always fall back to review."/>
+        </targetConfig>
+    </targetConfigs>
+</LightningComponentBundle>

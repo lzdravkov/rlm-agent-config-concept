@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  External Client App: RevenueAgent_Headless
+  Purpose: OAuth app used to authenticate server-to-server calls from Apex
+           to the Agentforce Agent API (einstein/ai-agent/v1) for the
+           Revenue Management agent (Revenue_Quote_Management,
+           BotDefinition Id 0Xxg8000001B9dhCAC).
+  Distribution: Local (this org only).
+-->
+<ExternalClientApplication xmlns="http://soap.sforce.com/2006/04/metadata">
+    <contactEmail>lzdravkov@salesforce.com</contactEmail>
+    <description>Headless OAuth app for driving the Revenue Management Agentforce agent via the Agent API from a custom Salesforce component.</description>
+    <distributionState>Local</distributionState>
+    <isProtected>false</isProtected>
+    <label>Revenue Agent Headless</label>
+</ExternalClientApplication>

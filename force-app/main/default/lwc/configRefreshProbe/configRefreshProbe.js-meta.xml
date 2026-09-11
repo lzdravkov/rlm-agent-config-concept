@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>67.0</apiVersion>
+    <isExposed>true</isExposed>
+    <masterLabel>Config Refresh Probe</masterLabel>
+    <description>Throwaway diagnostic for Spike 1 / Gate 1: probes the managed configurator LMS channel to test whether the native panel can be made to refresh after a side-channel apply.</description>
+    <targets>
+        <target>lightning__FlowScreen</target>
+    </targets>
+    <targetConfigs>
+        <targetConfig targets="lightning__FlowScreen">
+            <property name="quoteId" type="String" label="Quote Id"/>
+            <property name="quoteLineItemId" type="String" label="Quote Line Item Id"/>
+        </targetConfig>
+    </targetConfigs>
+</LightningComponentBundle>

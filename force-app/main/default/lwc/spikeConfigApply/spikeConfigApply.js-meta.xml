@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>67.0</apiVersion>
+    <isExposed>true</isExposed>
+    <targets>
+        <target>lightning__FlowScreen</target>
+    </targets>
+    <targetConfigs>
+        <targetConfig targets="lightning__FlowScreen">
+            <!-- Both ids come in from Flow variables; output not needed for this spike. -->
+            <property name="quoteId" type="String" label="Quote Id"
+                      description="Id of the parent Quote."/>
+            <property name="quoteLineItemId" type="String" label="Quote Line Item Id"
+                      description="Id of the QuoteLineItem being configured."/>
+        </targetConfig>
+    </targetConfigs>
+</LightningComponentBundle>

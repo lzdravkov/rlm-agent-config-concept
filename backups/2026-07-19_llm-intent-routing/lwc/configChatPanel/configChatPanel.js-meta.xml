@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>67.0</apiVersion>
+    <isExposed>true</isExposed>
+    <targets>
+        <target>lightning__FlowScreen</target>
+    </targets>
+    <targetConfigs>
+        <targetConfig targets="lightning__FlowScreen">
+            <!--
+                SAME bindings as spikeConfigApply so this drops into
+                RenderDraw_Product_Configurator_Flow the same way. Both ids arrive
+                from Flow variables; no @api outputs are needed because all state is
+                persisted in the org and re-read on apply.
+            -->
+            <property name="quoteId" type="String" label="Quote Id"
+                      description="Id of the parent Quote (required by the save/reprice engine)."/>
+            <property name="quoteLineItemId" type="String" label="Quote Line Item Id"
+                      description="Id of the root configurable QuoteLineItem being configured."/>
+            <!--
+                AUTO-APPLY default (2026-07-17; default flipped to true 2026-07-19). Sets the
+                STARTING mode of the in-panel Auto-apply toggle. When true (now the default), a
+                clean, high-confidence proposal is sent to the configurator automatically
+                without a manual Apply click; the rep can still flip the toggle off per session.
+                Auto-apply always degrades to the review card when anything is invalid,
+                ambiguous, or came from the keyword fallback.
+            -->
+            <property name="autoApplyDefault" type="Boolean" default="true"
+                      label="Auto-apply changes by default"
+                      description="If checked (default), a clean proposal is applied automatically without a manual Apply click. The rep can toggle this off in the panel. Invalid/ambiguous/low-confidence proposals always fall back to review."/>
+            <!--
+                SENT-TO-CONFIGURATOR card gate (2026-07-19). Controls the itemized "Sent to
+                the configurator" confirmation card shown after an apply. HIDDEN by default:
+                auto-apply confirms via the assistant chat line alone, which reads cleaner in
+                the hands-free flow. Set this variable to true in the Flow to bring the explicit
+                itemized card (with its Continue button) back for a given screen.
+            -->
+            <property name="showSentToConfigurator" type="Boolean" default="false"
+                      label="Show 'Sent to configurator' card"
+                      description="If checked, an itemized confirmation card appears after each apply. Default off — auto-apply confirms via the chat message alone. Enable per screen via a Flow variable."/>
+        </targetConfig>
+    </targetConfigs>
+</LightningComponentBundle>

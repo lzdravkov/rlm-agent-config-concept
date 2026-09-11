@@ -1,0 +1,81 @@
+/* configChatPanel — POC chat styling. Message bubbles + a scrollable transcript. */
+
+.chat-panel {
+    max-width: 640px;
+}
+
+/* Scrollable conversation area so a long transcript stays contained on a Flow screen. */
+.conversation {
+    max-height: 22rem;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+}
+
+/* One message row; rep messages align right, assistant left. */
+.msg-row {
+    display: flex;
+    margin-bottom: 0.5rem;
+}
+
+.msg-row_rep {
+    justify-content: flex-end;
+}
+
+.msg-row_assistant {
+    justify-content: flex-start;
+}
+
+/* Bubble shell. */
+.msg-bubble {
+    max-width: 80%;
+    border-radius: 0.75rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    word-break: break-word;
+}
+
+/* Rep bubble — brand fill, light text. */
+.msg-bubble_rep {
+    background: #0176d3;
+    color: #ffffff;
+    border-bottom-right-radius: 0.125rem;
+}
+
+.msg-bubble_rep .msg-role {
+    color: rgba(255, 255, 255, 0.85);
+}
+
+/* Assistant bubble — neutral shade. */
+.msg-bubble_assistant {
+    background: #f3f3f3;
+    color: #181818;
+    border-bottom-left-radius: 0.125rem;
+}
+
+.msg-role {
+    margin-bottom: 0.125rem;
+    font-size: 0.65rem;
+    letter-spacing: 0.0625rem;
+}
+
+.msg-text {
+    white-space: pre-wrap;
+}
+
+/* Keep the inline "working" spinner from collapsing its row. */
+.inline-spinner {
+    position: relative;
+    width: 1rem;
+    height: 1rem;
+}
+
+/* Review card rows get a subtle separator. */
+.review-row {
+    border: 1px solid #e5e5e5;
+    border-radius: 0.25rem;
+    background: #ffffff;
+}
+
+/* Engine-corrected diff rows stand out. */
+.diff-row_corrected {
+    background-color: #fef1ee;
+}
