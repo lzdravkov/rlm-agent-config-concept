@@ -107,21 +107,14 @@ path** (never a silent apply), so a misread directive is always something you ca
 | Doc | What it covers |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **The as-built architecture** — how the pieces fit together and why. System diagram, both launch paths, intent routing. Start here to understand the component. |
-| [DEPLOYMENT_README.md](DEPLOYMENT_README.md) | Repeatable, step-by-step **deploy guide** — order, tests/coverage gate, agent activation, gotchas, rollback. |
-| [PROJECT-JOURNAL.md](PROJECT-JOURNAL.md) | Chronological **build log + revert history** — what changed, when, and how to undo it. |
+| [DEPLOYMENT_README.md](DEPLOYMENT_README.md) | Repeatable, step-by-step **deploy guide** — order, tests/coverage gate, agent activation, gotchas, rollback. §11 has a copy/paste **AI-agent deploy prompt**. |
 
-### Planning package (how we got here)
-| Doc | What it covers |
-|---|---|
-| [PROJECT-PLAN.md](PROJECT-PLAN.md) | Top-level planning package index for the POC. |
-| [01-executive-summary.md](01-executive-summary.md) | Executive summary — the pitch and the outcome. |
-| [02-research-findings.md](02-research-findings.md) | Research findings from investigating the RLM configurator. |
-| [03-gap-analysis.md](03-gap-analysis.md) | Gap analysis — holes in the original ("canvas") plan. |
-| [04-corrected-architecture.md](04-corrected-architecture.md) | Corrected architecture after discovering the existing engine. |
-| [05-project-plan.md](05-project-plan.md) | Revised project plan — the reuse-engine path. |
-| [06-open-questions-and-decisions.md](06-open-questions-and-decisions.md) | Key decisions and their rationale. |
-| [07-discovered-engine.md](07-discovered-engine.md) | The discovered engine — what already exists in the target org. |
-| [Agent0.md](Agent0.md) | Discovery log from the initial exploration. |
+> **Planning package and build journal are no longer tracked.** The numbered planning docs
+> (`01-executive-summary.md` … `07-discovered-engine.md`), `PROJECT-PLAN.md`, `Agent0.md` and
+> `PROJECT-JOURNAL.md` were removed from version control in `53f0ac6` / `7c34845` and now live only in
+> local working copies. The as-built design they fed into is captured in
+> [ARCHITECTURE.md](ARCHITECTURE.md), and the deploy/rollback procedure in
+> [DEPLOYMENT_README.md](DEPLOYMENT_README.md).
 
 ---
 
@@ -161,6 +154,10 @@ Full instructions — including the production coverage gate, agent activation, 
 
 Then two manual, user-side steps: **activate** `Revenue_Product_Advisor` in Agent Builder 2.0, and
 **live-confirm** the pre-persist apply on a `ref_…` line.
+
+**Deploying with an AI coding agent?** [DEPLOYMENT_README.md §11](DEPLOYMENT_README.md#11-deploy-with-an-ai-coding-agent-copypaste-prompt)
+has a copy/paste prompt that runs all four steps, asserts the target org Id before writing anything, and stops at
+the data boundary.
 
 ---
 

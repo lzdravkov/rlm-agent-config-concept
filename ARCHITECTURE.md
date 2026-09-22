@@ -5,9 +5,12 @@
 >
 > This is the **final, as-built architecture** of the POC — a single reference for how the pieces
 > fit together and why. It reflects the deployed state, not the original plan. For the *chronological*
-> narrative (what changed, when, and how to revert) see [PROJECT-JOURNAL.md](PROJECT-JOURNAL.md); for the
-> *decisions and their rationale* see [06-open-questions-and-decisions.md](06-open-questions-and-decisions.md);
-> for the *discovered engine internals* see [07-discovered-engine.md](07-discovered-engine.md).
+> narrative (what changed, when, and how to revert) see `PROJECT-JOURNAL.md`; for the
+> *decisions and their rationale* see `06-open-questions-and-decisions.md`;
+> for the *discovered engine internals* see `07-discovered-engine.md`.
+>
+> ℹ️ Those planning docs and the project journal were **removed from version control** in `53f0ac6` / `7c34845`
+> and survive only in local working copies, so they are referenced here by filename rather than as links.
 >
 > **Two launch paths.** The panel now works both from a **persisted** quote line (`0QL…`, open a saved line →
 > Configure) *and* **pre-persist** directly from the product catalog (Configure before Save, where only a transient
@@ -39,7 +42,7 @@ Canonical test data: Quote `0Q0g80000017wQ5CAI`, root configurable line `0QLg800
 (ProductClassification `BasedOnId = 11BgK00000h2GWCUA2`), Quote **`0Q0gK000002dwcTSAQ`**.
 > ⚠️ Several *live-data* tests in `ConfigEngineControllerTest` / `ConfigLmsGroundingServiceTest` still hardcode the
 > **original** line Id `0QLg8000001RYgDGAW` and therefore **fail on the clone** (`QuoteLineItem not found`). This is
-> stale-fixture drift, not a regression — see [PROJECT-JOURNAL.md](PROJECT-JOURNAL.md) (2026-09-11 entry).
+> stale-fixture drift, not a regression — see `PROJECT-JOURNAL.md` (2026-09-11 entry).
 
 ---
 
@@ -272,7 +275,7 @@ These back a **live NGA Agentforce agent** or are the reference flow. Read-only.
 3. **Agent = insight; our engine = apply (hard separation of two turns).** The guided-selling turn reaches the
    real agent read-only for a spoken answer; nothing it says is auto-applied. The configuration turn is the sole
    write path. We do **not** clone the agent (its config action writes via PST — the exact desync we abandoned) and
-   we do **not** parse the agent's free-text answer into a configuration. See [06 · D8–D9](06-open-questions-and-decisions.md).
+   we do **not** parse the agent's free-text answer into a configuration. See `06 · D8–D9`.
 
 4. **Grounding is the single source of truth; the LLM is never trusted.** Every value the model returns is
    re-validated against `getAttributes` (legal `developerName`s + picklist values). A hallucinated attribute or
@@ -310,7 +313,7 @@ These back a **live NGA Agentforce agent** or are the reference flow. Read-only.
   build.)
 - **Rollback path.** As of 2026-09-11 the project is **git-backed** (private repo, branch `rlm-config-agent-v2`) —
   git is the primary revert path. Pre-git change points (through 2026-07-20) are snapshotted under dated `backups/`
-  folders; see the [PROJECT-JOURNAL.md](PROJECT-JOURNAL.md) Backups & Revert Protocol.
+  folders; see the `PROJECT-JOURNAL.md` Backups & Revert Protocol.
 - **Agent latency ~8–9s P75.** The <5s target from the original canvas was refuted; success is measured as a P75
   with a visible progress state.
 - **Trial org expires 2026-08-17.** Plan any longer-lived demo accordingly.
@@ -320,12 +323,12 @@ These back a **live NGA Agentforce agent** or are the reference flow. Read-only.
 ## 8. Known gaps (not in POC scope)
 
 - **Audit logging of AI-applied values** — a governance requirement for production (who applied what, when, from
-  which suggestion); not built. See [06 · Q13](06-open-questions-and-decisions.md).
+  which suggestion); not built. See `06 · Q13`.
 - **Approval-policy / threshold enforcement** on AI-populated, revenue-affecting quotes — deferred to production
   hardening.
 - **Multi-product scale** — the engine's two services disagree on the picklist field (`Name` vs `Value`); harmless
   on FESBA (where they're equal) but must be aligned before claiming "scalable to any configurable product," and a
-  second product should be tested. See [07 · §5](07-discovered-engine.md) and [06 · Q15](06-open-questions-and-decisions.md).
+  second product should be tested. See `07 · §5` and `06 · Q15`.
 - **Session persistence** — the agent `sessionId` is in-memory only; a page reload starts a fresh conversation.
 
 ---
@@ -334,7 +337,7 @@ These back a **live NGA Agentforce agent** or are the reference flow. Read-only.
 
 | For… | See |
 |---|---|
-| Chronological build log + how to revert | [PROJECT-JOURNAL.md](PROJECT-JOURNAL.md) |
-| Decisions & their rationale (D1–D11) | [06-open-questions-and-decisions.md](06-open-questions-and-decisions.md) |
-| Discovered engine internals (PST, pricing, two-step sequencing) | [07-discovered-engine.md](07-discovered-engine.md) |
-| Original feasibility verdict + corrected architecture | [01-executive-summary.md](01-executive-summary.md), [04-corrected-architecture.md](04-corrected-architecture.md) |
+| Chronological build log + how to revert | `PROJECT-JOURNAL.md` |
+| Decisions & their rationale (D1–D11) | `06-open-questions-and-decisions.md` |
+| Discovered engine internals (PST, pricing, two-step sequencing) | `07-discovered-engine.md` |
+| Original feasibility verdict + corrected architecture | `01-executive-summary.md`, `04-corrected-architecture.md` |
