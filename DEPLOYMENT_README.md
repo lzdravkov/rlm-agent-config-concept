@@ -5,7 +5,7 @@
 > for `rlm-agent-config-v2` on 2026-09-11.
 >
 > For *how the pieces fit together* see [ARCHITECTURE.md](ARCHITECTURE.md); for the *chronological build log +
-> revert history* see [PROJECT-JOURNAL.md](PROJECT-JOURNAL.md).
+> revert history* see `PROJECT-JOURNAL.md`.
 
 ---
 
@@ -40,6 +40,9 @@ sf project deploy start --source-dir force-app/main/default/aiAuthoringBundles/R
 
 > ⚠️ This repo deploys **on top of** an org that already has the RLM engine, the four protected engine services,
 > and the existing `Revenue_Quote_Management` agent. It is **not** a from-scratch org build. See §2.
+
+> 🤖 Prefer to have an AI coding agent run the whole thing? §11 has a copy/paste prompt that drives every step
+> below, with an org-Id assertion so it cannot deploy to the wrong org.
 
 ---
 
@@ -213,6 +216,17 @@ only be checked live.
 
 ## 6. Gotchas & platform constraints
 
+- **Known defect — picklist `Name` vs `Value` misalignment on save/readback.** The panel proposes a picklist
+  selection by its **label** (`AttributePicklistValue.Name`), but the engine stores and reads back the **value**
+  (`AttributePicklistValue.Value`). Where the two differ, the persisted configuration holds a token matching none
+  of the options the panel offers, so the attribute cannot be re-selected on reload and the diff reports
+  `changed:true` for a selection the user never changed. Invisible on the FESBA reference product, where `Name`
+  and `Value` are equal; reproducible anywhere they diverge (e.g. a *Base Core Count* whose labels are
+  `Two/Four/Six/Eight` but whose values are `2/4/6/8` — apply `"Eight"`, read back `"8"`). This is the
+  "multi-product scale caveat" that `07-discovered-engine.md` flags as theoretical. The cheapest fix is to
+  normalise on readback inside `ConfigEngineController`, mapping the returned `Value` back to its `Name` using
+  the label→id map `ConfigLmsGroundingService` already computes; keying the panel on
+  `AttributePicklistValue.Id` end-to-end is the more thorough one. Both stay clear of the org-resident engine.
 - **`.agent` files are TAB-ONLY.** Agent Builder 2.0 rejects space-indented `.agent` files with `PARSE_EXCEPTION`
   even when `sf agent validate` passes. Editor protection is committed: `.editorconfig` `[*.agent]` +
   `.vscode/settings.json` `[agentscript]` (`insertSpaces:false`, `formatOnSave:false`, `formatOnPaste:false`).
@@ -274,7 +288,7 @@ The project is **git-backed** (private repo, branch `rlm-config-agent-v2`).
   destructive change set if it must be removed. `AgentAdvisorService` still compiles either way (the agent name is a
   string), but the pre-persist Q&A turn will error at runtime until the agent is active again.
 - Change points before 2026-07-20 predate git — see the `backups/` folders referenced in
-  [PROJECT-JOURNAL.md](PROJECT-JOURNAL.md).
+  `PROJECT-JOURNAL.md`.
 
 ---
 
@@ -302,3 +316,83 @@ sf org display -o "$ORG"
 > Note: deploying the whole `force-app` folder (§10 first command) also deploys the reference LWCs/flows and the
 > unchanged reference Apex — harmless, but the staged per-directory order in §4 is preferred for a clean, verifiable
 > rollout (and lets you hard-refresh between the LWC and Flow steps).
+
+---
+
+## 11. Deploy with an AI coding agent (copy/paste prompt)
+
+Every step in this guide is CLI-driven, so an AI coding agent (Cursor, Claude Code, Codex, Copilot CLI, …) can
+run the whole deploy end to end. The prompt below is the one this guide was last exercised with. It is written
+to be **safe by construction**: the agent has to prove it is pointed at the right org before it writes anything,
+and it stops at the data boundary rather than guessing.
+
+Fill in the four fields at the top and paste it as-is.
+
+```text
+Deploy this GitHub repo into my Salesforce org.
+
+Repo:            <git URL or local path>
+Org:             <sf CLI alias>
+Expected Org Id: <00D…>
+Login type:      production          # or: sandbox
+
+Do this:
+1. Clone the repo into a subfolder here.
+2. Read README.md, sfdx-project.json / cumulusci.yml, and the source tree.
+   Tell me what the repo is and which deploy mechanism you'll use.
+3. Make sure `sf` (and `cci` if needed) are installed; if not, stop and tell me.
+4. Confirm the target org before touching it:
+   - Run `sf org display --target-org <alias>` WITHOUT printing the access token
+     (prefer `--json` and surface only alias, username, orgId, instanceUrl,
+     connectedStatus). If a temp "show secrets" env var is set, don't echo the token.
+   - If it errors with NamedOrgNotFoundError / not authorized: do NOT substitute a
+     similarly-named org even if the CLI suggests one. Run
+     `sf org login web --alias <alias> --instance-url <login url for my Login type>`,
+     then PAUSE and tell me to finish the browser login before continuing.
+   - Re-run the display, verify Connected, and if I gave an Expected Org Id, assert
+     it matches EXACTLY. On any mismatch, stop and ask — never deploy.
+5. Run a validate/dry-run deploy and show me the plan.
+6. Deploy. (Once the org is confirmed in step 4, you are pre-approved to run the
+   metadata deploy; data loads/deletes still require my explicit approval.)
+7. Do EVERY post-deploy step the README calls for — permission sets, feature
+   toggles, sample data, field/config that isn't on a layout, activation order.
+   List anything you cannot automate so I can do it by hand.
+8. Verify the deploy succeeded and give me a short summary of what changed and
+   what's left for me to do.
+
+Stop and ask me before anything destructive or anything that loads/deletes data.
+```
+
+### Why the prompt is shaped this way
+
+Three of its clauses exist because the obvious failure modes are all silent ones:
+
+- **Assert the org Id, and never accept a substitute.** When an alias isn't authorized the CLI helpfully suggests
+  a similarly-named org, and an agent left to its own judgement will take the suggestion. Pinning `Expected Org Id`
+  turns "deployed to the wrong org" from a plausible outcome into an impossible one.
+- **Dry-run before deploy, and draw the approval line at data.** Metadata deploys are reversible; data loads and
+  `deleteOldData`-style operations are not. Pre-approving step 6 keeps the run unattended without handing over the
+  destructive operations.
+- **Demand the post-deploy steps explicitly.** The parts of this deploy that a CLI *cannot* do (§5 — agent
+  activation, permission-set assignment, the live apply confirmation) are exactly the parts an agent will otherwise
+  declare "done" without doing. Asking it to list what it could not automate surfaces them.
+
+### Repo-specific notes worth appending to the prompt
+
+Paste these under the numbered list when targeting an org that isn't the reference org — they correspond to §2,
+§4 and §7:
+
+```text
+Notes for this repo specifically:
+- Deploy in the staged order in DEPLOYMENT_README.md §4 (classes → lwc → flows → agent
+  bundle). Do NOT deploy the whole force-app folder in one shot: it includes
+  reference-only components that depend on org-resident Apex.
+- This repo deploys ON TOP OF an org that already has the RLM configurator engine.
+  If the engine services exist under different names in my org, tell me before
+  editing anything — do not silently rename across the source tree.
+- The live-data tests hardcode the reference org's record Ids and attribute names.
+  Expect them to fail on any other org; re-point them or exclude them (§4, §7),
+  and tell me which you did.
+- The agent bundle must be activated by hand in Agent Builder 2.0 (§5a). Deploying
+  it does NOT create a runtime agent.
+```
