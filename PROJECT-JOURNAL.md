@@ -2,8 +2,9 @@
 
 > **Purpose.** A rolling, chronological record of what we built, why, and how to
 > revert. This is the single narrative to point back to if we need to undo work.
-> This project is **not** under git, so **backups/ is the only rollback path** —
-> every backup created is listed under [Backups & Revert Protocol](#backups--revert-protocol).
+> As of 2026-09-11 the project is **git-backed** (private repo, branch `rlm-config-agent-v2`), so **git is the
+> primary rollback path**. Earlier work (through 2026-07-20) predates git — for those change points the dated
+> `backups/` folders remain the only revert path; see [Backups & Revert Protocol](#backups--revert-protocol).
 >
 > Newest entries at the top of the [Change Log](#change-log). Append, don't rewrite.
 
@@ -231,6 +232,114 @@ sf project deploy start --source-dir force-app/main/default/lwc/configChatPanel
 ## Change Log
 
 *(Newest first. Each entry: date, what changed, why, files, verification, backup ref.)*
+
+### 2026-09-11 — Pre-persist conversational configuration + new guided-selling agent (`Revenue_Product_Advisor`)
+- **Ask (the bug):** conversational configuration worked only when a **persisted** `QuoteLineItem` (`0QL…`)
+  existed (open a saved line → Configure). Launching **Configure directly from the product catalog** failed with
+  `QuoteLineItem not found: ref_8afefb1f_…` because on the catalog path the RLM Configurator hands the flow a
+  **transient in-memory node reference** (`ref_<uuid>`) — not a queryable record. The whole read/grounding layer
+  was keyed to a `0QL…` Id. Goal: configure **before** the line is persisted, and route the guided-selling (Q&A)
+  turn to a **new, purpose-built agent** for the pre-persist case, leaving `Revenue_Quote_Management` untouched.
+- **Target org — NEW CLONE.** All work here landed on **`rlm-agent-config-v2`** (a clone of the original;
+  org `00DgK00000Zok57UAB`, trial `trailsignup-802b9f3fe5ee02`, API v67.0), **not** the original
+  `rlm_agent_config_concept`. **Re-captured clone fixtures** (Ids differ from the original org):
+  FESBA Generator Set product **`01tgK00000EPnyuQAD`** (ProductClassification `BasedOnId = 11BgK00000h2GWCUA2`),
+  live Quote **`0Q0gK000002dwcTSAQ`** ("New Quote For Infinitech").
+- **Root cause (confirmed by code + live-org SOQL):** the fix is a **read/grounding change, not an apply change**.
+  The apply path already publishes `key: [this.quoteLineItemId]` — i.e. against whatever `transactionLineId` holds,
+  which *is* the `ref_…` node key the LMS `valueChanged` contract expects. What blocked pre-persist was that empty
+  grounding (QLI wires firing with a `ref_…` → error/empty) made every row fail with "no configurator mapping." So:
+  **when the line is transient, ground off the product** (`S01_DataManager.rootProductId`, already resolved in the
+  flow) instead of the nonexistent persisted line.
+- **What changed (by stage):**
+  1. **Detection + product routing (stops the crash).** `configChatPanel` gained `@api rootProductId`, a synchronous
+     `get _isPrePersist()` (true when `quoteLineItemId` is present/blank but does **not** start with `0QL`), and
+     **reactive-param wire gating** via `_qliParam` (`undefined` pre-persist → suppresses the QLI wires) and
+     `_productParam` (`undefined` post-persist → suppresses the product wires). An `undefined` reactive `$param`
+     never invokes its `@wire`, so the QLI wires can no longer fire with a `ref_…`. New `rootProductId` LWC property
+     in the meta; new `S01_DataManager.rootProductId → S00_ConfigChatPanel.rootProductId` binding deployed as a new
+     **active** version of `Agent_Product_Configurator_Flow`.
+  2. **Product grounding — new SOQL service (zero-drift).** New `ProductConfigGroundingService` (`with sharing`,
+     cacheable, never-throws-to-wire) with `getAttributesForProduct(productId)` / `getLmsGroundingForProduct(productId)`
+     returning the **existing DTO types** (`ConfigEngineController.AttributesResult` / `ConfigLmsGroundingService.LmsGroundingResult`)
+     so the LWC and `_buildValueChangedItem` need no new shape handling. Correctness invariant carried over verbatim:
+     picklist label = **`Name ?? Code`** (NOT `Value`) + the ambiguous-label collision guard, so the pre-persist
+     catalog is identical to the saved-line catalog the moment the line is saved. `@TestVisible CatalogReader` seam
+     for deterministic tests. LWC re-points: the QLI and product variants of each wire funnel into shared handlers
+     (`_applyCatalog` / `_applyLmsGrounding`). Chose **SOQL over the Connect API** deliberately: only the identical
+     `Name ?? Code` SOQL expression guarantees no label drift (Connect API returns a different shape); documented the
+     Connect API as the authoritative fallback if scope diverges beyond FESBA.
+  3. **Extraction re-point.** `ConfigExtractionService.extractConfiguration` now takes `(requirementText,
+     quoteLineItemId, productId)` (plus a non-annotated 2-arg overload delegating `productId=null`, since only one
+     overload may be `@AuraEnabled`). New private `resolveCatalog(qli, productId)`: `groundingOverride` if set → else
+     product-based when the line is transient/blank and `productId` present → else `getAttributes(qli)`. Guard message
+     changed to *"quoteLineItemId or productId is required."* All prompt/validation logic untouched.
+  4. **Pre-persist apply + invalidation.** Apply is unchanged (already keys on the `ref_…` node ref, preserves
+     Numbers-first-then-Picklists ordering, one `updatePrices`). Added **proposal invalidation**: when
+     `quoteLineItemId` changes (a deselect/reselect mints a new `ref_…`), any pending proposal is cleared and the
+     phase resets to `READY`, so a stale ref is never published.
+  5. **LMS subscribe (robustness).** `configChatPanel` — previously publish-only — now **subscribes** to
+     `lightning__productConfigurator_notification` (pattern proven in `configRefreshProbe` /
+     `renderDraw3DConfigurationPrototype`): subscribe in `connectedCallback` guarded on `_subscription` +
+     `messageContext`, unsubscribe in `disconnectedCallback`. Inbound messages are a second, robust trigger for the
+     ref-change invalidation above.
+  6. **New agent + `AgentAdvisorService` parameterization.** New **insight-only NGA Employee agent**
+     `Revenue_Product_Advisor` (`aiAuthoringBundles/`, one `system:` persona + one `topic:` with scope/instructions +
+     **zero data actions / zero GenAiFunction** — a `@utils.transition`-only advice topic). It answers product/attribute
+     advice purely from a CONTEXT block passed in `userMessage`, so it never needs a persisted Quote/QLI.
+     `AgentAdvisorService` now selects the agent per turn: added `PREPERSIST_AGENT_API_NAME = 'Revenue_Product_Advisor'`,
+     changed the `AgentGateway.invoke` seam to `invoke(userMessage, sessionId, agentApiName)`, added `productId` to
+     `askAgent` (5-arg `@AuraEnabled` + 4-arg non-annotated overload). When the line is transient/blank and `productId`
+     is present → `Revenue_Product_Advisor` with a product-shaped CONTEXT block (`buildProductContextMessage` →
+     `formatProductContext`); otherwise the existing quote/line path to `Revenue_Quote_Management`, **unchanged**.
+- **Key findings (settle the plan's open [verify]s):**
+  - **NGA vs Legacy.** The new agent is authored the **NGA** way — `aiAuthoringBundles/` **only**. `bots/`,
+    `genAiPlanners/`, `genAiFunctions/`, `genAiPlugins/`, `genAiPlannerBundles/` must **never** be committed (legacy
+    Bot metadata). `sf agent publish authoring-bundle` / `sf agent create` are forbidden (they force Agent Builder
+    1.0). Correct path: author `.agent` → `sf agent validate authoring-bundle` → `sf project deploy start
+    --source-dir` → **USER activates in Agent Builder 2.0 UI** → retrieve back.
+  - **Invocability RESOLVED (supersedes the old "NGA isn't Apex-invocable" hedge).** The working
+    `Revenue_Quote_Management` carries BOTH a runtime **`BotDefinition`** (Type=InternalCopilot, session-invoked,
+    **zero** Einstein Agent Users) AND a `GenAiPlannerBundle`. Apex `createCustomAction('generateAiAgentResponse',
+    '<apiName>')` works **after** UI activation creates the runtime Bot — **no source-committed Bot/BotVersion
+    needed.** This org runs its Employee Agents session-based with **no dedicated Einstein Agent User**, so the new
+    bundle omits `default_agent_user` (validation passed without it; the agent user is assigned at UI activation).
+  - **`.agent` = TAB-ONLY indentation.** Agent Builder 2.0 rejects space-indented `.agent` files with
+    `PARSE_EXCEPTION` even when `sf agent validate` passes. Added editor protection: `.editorconfig` `[*.agent]`
+    (`indent_style = tab`) + `.vscode/settings.json` `[agentscript]` (`insertSpaces:false`, `formatOnSave:false`,
+    `formatOnPaste:false`, `detectIndentation:false`).
+- **Files:**
+  - New: `classes/ProductConfigGroundingService.cls` (+ `-meta`) + `ProductConfigGroundingServiceTest.cls`;
+    `aiAuthoringBundles/Revenue_Product_Advisor/{Revenue_Product_Advisor.agent, .bundle-meta.xml}`;
+    `.editorconfig`; `.vscode/settings.json` `[agentscript]` block.
+  - Modified: `lwc/configChatPanel/configChatPanel.js` (+ `.js-meta.xml`), `classes/ConfigExtractionService.cls`
+    (+ Test), `classes/AgentAdvisorService.cls` (+ Test), `flows/Agent_Product_Configurator_Flow.flow-meta.xml`
+    (new active version).
+  - Reference-only (NOT modified): `ConfigLmsGroundingService` (label/shape source), the four protected engine
+    services, `renderDraw3DConfigurationPrototype`, `RenderDraw_Product_Configurator_Flow`, `Revenue_Quote_Management`.
+- **Verification:**
+  - Apex/LWC/Flow + the new agent bundle all **deployed clean** to `rlm-agent-config-v2`. `sf agent validate
+    authoring-bundle` → success; `sf project deploy start` → both `AiAuthoringBundle` components Created.
+  - New/modified **seam-based tests all pass**: `ConfigExtractionServiceTest`, `AgentAdvisorServiceTest`,
+    `ProductConfigGroundingServiceTest` (28 tests) — 0 failures. Per-class coverage: ConfigExtractionService 87%,
+    AgentAdvisorService 84%, ProductConfigGroundingService 92%, ConfigLmsGroundingService 92%.
+  - **Full-suite (`RunLocalTests`) note — no regression from this work.** 167 tests, 14 failures. **All 14 are
+    pre-existing / environment-dependent, not caused by these changes:** 8 are *live-data* tests in
+    `ConfigEngineControllerTest` (5) and `ConfigLmsGroundingServiceTest` (3) that **hardcode the ORIGINAL org's line
+    Id `0QLg8000001RYgDGAW`** (absent in the clone → `QuoteLineItem not found`); the other 6 are unrelated subsystems
+    (`RLM_MFG_OrderToServiceContractTest`, `RLM_RampScheduleValidatorTest`). The org-wide 25% figure reflects many
+    untested `RLM_*` classes across the whole org, not the deployed feature. **Follow-up offered:** re-point the
+    stale live-data tests to the clone's fixtures (needs a persisted clone `0QL` line Id) — deferred, out of this
+    plan's scope, touches reference/protected test classes.
+- **Outstanding — USER-SIDE GATES (not attempted autonomously):**
+  1. **Activate `Revenue_Product_Advisor`** in Agent Builder 2.0 (Setup → Agents): set type = **Employee**, assign
+     the agent user if prompted, **Activate**. The runtime Bot (and thus Apex invocability) only exists after this.
+     Then smoke-test `generateAiAgentResponse` for the API name (mirror the 2026-07-19 test on the existing agent).
+  2. **Interactive `ref_` LMS spike (Stage 0):** on a catalog-launched screen, confirm the Data Manager **accepts a
+     `valueChanged` whose `key` is `["ref_…"]`** (the one remaining apply assumption). Code is in place; this is a
+     live-click confirmation.
+- **Revert:** project is now **git-backed** (branch `rlm-config-agent-v2`) — revert via git, not `backups/`. No
+  functional behavior on the persisted-line path changed (overloads preserve the old signatures).
 
 ### 2026-07-20 — LLM intent classification in extraction (D11 follow-up shipped; heuristic gate was leaking)
 - **Bug (found in live retest of the heuristic gate):** the phrase-based `_looksLikeQuestion` gate missed real

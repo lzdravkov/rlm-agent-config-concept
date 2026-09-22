@@ -60,7 +60,7 @@
  * spikeConfigApply so this drops into RenderDraw_Product_Configurator_Flow the same way.
  */
 import { LightningElement, api, wire } from 'lwc';
-import { publish, MessageContext } from 'lightning/messageService';
+import { publish, subscribe, unsubscribe, MessageContext } from 'lightning/messageService';
 // Platform channel that is a COMMAND BUS INTO the managed RLM Data Manager. Publishing
 // `valueChanged` here drives the SAME code path the native attribute panel uses when a
 // user edits a field, so the on-screen configurator applies/reprices/re-renders natively.
@@ -71,6 +71,13 @@ import getSavedConfiguration from '@salesforce/apex/ConfigEngineController.getSa
 // picklists, a label -> AttributePicklistValue Id (0v6) map — the exact `value` the
 // Data Manager expects for a picklist `valueChanged`.
 import getLmsGrounding from '@salesforce/apex/ConfigLmsGroundingService.getLmsGrounding';
+// PRE-PERSIST grounding twins (catalog launch, before the line is a persisted 0QL…).
+// When the configurator hands us a transient `ref_…` node id instead of a QuoteLineItem,
+// we ground off the ROOT PRODUCT via its ProductClassification, with ZERO drift from the
+// QLI-based reads above (identical attribute set + Name??Code picklist labels). See
+// ProductConfigGroundingService.cls.
+import getAttributesForProduct from '@salesforce/apex/ProductConfigGroundingService.getAttributesForProduct';
+import getLmsGroundingForProduct from '@salesforce/apex/ProductConfigGroundingService.getLmsGroundingForProduct';
 import extractConfiguration from '@salesforce/apex/ConfigExtractionService.extractConfiguration';
 // Guided-selling / Q&A bridge (2026-07-19). Forwards an INFORMATIONAL question to the real
 // Revenue Management agent and returns its answer as text. Insight-only — it never applies a
@@ -100,7 +107,33 @@ const PHASE = {
 export default class ConfigChatPanel extends LightningElement {
     // --- Flow-provided context (same names/bindings as spikeConfigApply) ---
     @api quoteId;
-    @api quoteLineItemId;
+
+    // Root configurable Product2 Id (S01_DataManager.rootProductId, bound in the flow).
+    // The PRE-PERSIST grounding source: when the line is a transient `ref_…` node (catalog
+    // launch) there is no persisted QuoteLineItem to read, so the catalog/grounding wires
+    // ground off this product instead. Absent (undefined) on the saved-line path.
+    @api rootProductId;
+
+    // Root configurable QuoteLineItem id — BUT on the catalog-launch path this is a
+    // transient `ref_<uuid>` configurator node id, not a persisted 0QL… record (see
+    // _isPrePersist). Exposed via accessors over a backing field so we can detect a
+    // deselect/reselect (which mints a NEW ref_…) and invalidate a stale pending proposal.
+    _quoteLineItemId;
+    @api
+    get quoteLineItemId() {
+        return this._quoteLineItemId;
+    }
+    set quoteLineItemId(value) {
+        const previous = this._quoteLineItemId;
+        this._quoteLineItemId = value;
+        // A change AFTER the first assignment means the rep moved to a different line/node
+        // (a reselect mints a new ref_…). Any proposal built against the old line is stale;
+        // clear it so a selection is never published against a line the rep left. The
+        // initial assignment (previous === undefined) is just the panel loading — no-op.
+        if (previous !== undefined && previous !== value) {
+            this._invalidateProposalOnLineChange();
+        }
+    }
 
     // Flow-set STARTING mode for auto-apply (see js-meta.xml). This only seeds the
     // in-panel toggle's initial value; the rep can flip it per session afterwards.
@@ -185,6 +218,49 @@ export default class ConfigChatPanel extends LightningElement {
     applyErrorMessage;           // set only when a payload could not be built (no publish sent)
 
     // =====================================================================
+    // PRE-PERSIST DETECTION + WIRE PARAM GATING
+    // =====================================================================
+
+    /**
+     * True when we are configuring a line that is NOT yet a persisted QuoteLineItem —
+     * i.e. the catalog-launch path, where the configurator hands us a transient
+     * `ref_<uuid>` node id (or, defensively, a blank line with a root product to ground
+     * off). A persisted line's id starts with the 0QL key prefix.
+     *
+     * This is the switch that re-points the read layer: persisted -> QLI-based wires;
+     * pre-persist -> product-based wires. The APPLY path is unchanged either way (it keys
+     * on quoteLineItemId, which IS the ref_ node key the valueChanged contract expects).
+     */
+    get _isPrePersist() {
+        const qli = this.quoteLineItemId;
+        if (qli && qli.startsWith('0QL')) {
+            return false; // a persisted QuoteLineItem
+        }
+        // Pre-persist only once we actually have something to ground on (a transient line
+        // id or a root product id); before either arrives we are simply still loading.
+        return !!(qli || this.rootProductId);
+    }
+
+    /**
+     * Reactive param for the QLI-keyed wires. Returns undefined pre-persist, which
+     * SUPPRESSES those wires entirely (an undefined reactive @wire param does not invoke
+     * the adapter) — so getAttributes / getSavedConfiguration / getLmsGrounding never fire
+     * with a ref_… id, which is exactly what used to crash the panel from the catalog.
+     */
+    get _qliParam() {
+        return this._isPrePersist ? undefined : this.quoteLineItemId;
+    }
+
+    /**
+     * Reactive param for the product-keyed wires. Returns the root product id ONLY
+     * pre-persist (and only once it has arrived), and undefined otherwise — so the
+     * product wires fire exclusively on the catalog path.
+     */
+    get _productParam() {
+        return this._isPrePersist ? this.rootProductId : undefined;
+    }
+
+    // =====================================================================
     // WIRES
     // =====================================================================
 
@@ -193,11 +269,31 @@ export default class ConfigChatPanel extends LightningElement {
     messageContext;
 
     /**
-     * Grounding source. cacheable — safe because getAttributes is SOQL-only.
-     * Never hard-fails: errors come back in AttributesResult.errorMessage.
+     * Grounding source (persisted line). cacheable — safe because getAttributes is
+     * SOQL-only. Never hard-fails: errors come back in AttributesResult.errorMessage.
+     * Suppressed pre-persist (undefined param) so it never fires with a ref_… id.
      */
-    @wire(getAttributes, { quoteLineItemId: '$quoteLineItemId' })
-    wiredAttributes({ data, error }) {
+    @wire(getAttributes, { quoteLineItemId: '$_qliParam' })
+    wiredAttributes(result) {
+        this._applyCatalog(result);
+    }
+
+    /**
+     * PRE-PERSIST twin of wiredAttributes. Fires only on the catalog path (product param
+     * set, QLI param undefined) and funnels into the SAME handler, so catalog handling is
+     * identical whether the grounding came from the saved line or the product.
+     */
+    @wire(getAttributesForProduct, { productId: '$_productParam' })
+    wiredAttributesForProduct(result) {
+        this._applyCatalog(result);
+    }
+
+    /**
+     * Shared catalog handler for both the QLI-based and product-based grounding wires.
+     * Both return the identical AttributesResult shape (by design — see
+     * ProductConfigGroundingService), so there is exactly one body.
+     */
+    _applyCatalog({ data, error }) {
         if (data) {
             this.productName = data.productName;
             this.catalogAttributes = data.attributes || [];
@@ -215,23 +311,44 @@ export default class ConfigChatPanel extends LightningElement {
 
     /**
      * Currently persisted values. cacheable; we keep the raw wire result so we can
-     * refreshApex() it after an apply to re-pull the post-save state.
+     * refreshApex() it after an apply to re-pull the post-save state. QLI-only: a
+     * pre-persist line has no saved configuration yet, so this wire is suppressed
+     * (undefined param) on the catalog path and the current-config chip does not render.
      */
-    @wire(getSavedConfiguration, { quoteLineItemId: '$quoteLineItemId' })
+    @wire(getSavedConfiguration, { quoteLineItemId: '$_qliParam' })
     wiredSaved(result) {
         this._wiredSavedConfig = result;
         this._recomputeCurrentConfig();
     }
 
     /**
-     * LMS-publish grounding: attributeId (0tj) + picklist label->valueId (0v6) per
-     * attribute. cacheable (SOQL-only). Indexed by developerName so handleApply can
-     * translate each reviewed selection into the exact `valueChanged` payload the Data
-     * Manager expects. A failure here is non-fatal at wire time — it only blocks Apply,
-     * with a clear message, so extraction/review still work.
+     * LMS-publish grounding (persisted line): attributeId (0tj) + picklist label->valueId
+     * (0v6) per attribute. cacheable (SOQL-only). A failure here is non-fatal at wire time
+     * — it only blocks Apply, with a clear message, so extraction/review still work.
+     * Suppressed pre-persist (undefined param).
      */
-    @wire(getLmsGrounding, { quoteLineItemId: '$quoteLineItemId' })
-    wiredLmsGrounding({ data, error }) {
+    @wire(getLmsGrounding, { quoteLineItemId: '$_qliParam' })
+    wiredLmsGrounding(result) {
+        this._applyLmsGrounding(result);
+    }
+
+    /**
+     * PRE-PERSIST twin of wiredLmsGrounding. Fires only on the catalog path and funnels
+     * into the SAME handler. The product path returns ALL legal attributes (the correct
+     * superset before any value is set); where an attribute also exists on the QLI path
+     * the label->0v6-Id mapping is identical, so there is no drift.
+     */
+    @wire(getLmsGroundingForProduct, { productId: '$_productParam' })
+    wiredLmsGroundingForProduct(result) {
+        this._applyLmsGrounding(result);
+    }
+
+    /**
+     * Shared grounding handler for both the QLI-based and product-based wires. Indexed by
+     * developerName so handleApply can translate each reviewed selection into the exact
+     * `valueChanged` payload the Data Manager expects.
+     */
+    _applyLmsGrounding({ data, error }) {
         if (data) {
             this._lmsGroundingError = data.errorMessage;
             const byDev = {};
@@ -261,13 +378,103 @@ export default class ConfigChatPanel extends LightningElement {
     // =====================================================================
 
     /**
+     * LMS subscription handle for the productConfigurator notification channel. Held so we
+     * can unsubscribe in disconnectedCallback. Null until connectedCallback subscribes.
+     */
+    _subscription;
+
+    /**
      * Seed the session's auto-apply mode from the Flow-set default exactly once, after
      * the framework has assigned all @api properties. We copy into a mutable `autoApply`
      * (rather than binding the toggle directly to the @api prop) so a rep's per-session
      * flip never has to fight Flow's re-hydration of the input value.
+     *
+     * Also subscribes to the configurator notification channel so we can detect when the
+     * Data Manager re-keys the active line (a deselect/reselect mints a new `ref_…`) — a
+     * second, robust trigger for stale-proposal invalidation (the first being the
+     * quoteLineItemId setter). The panel was publish-only until now; this makes it
+     * bidirectional but strictly read-only on inbound (we never mutate configurator state
+     * from a received message).
      */
     connectedCallback() {
         this.autoApply = this.autoApplyDefault === true;
+        this._subscribeToConfiguratorChannel();
+    }
+
+    /** Tear down the LMS subscription when the panel is destroyed (tab close / flow nav). */
+    disconnectedCallback() {
+        if (this._subscription) {
+            unsubscribe(this._subscription);
+            this._subscription = null;
+        }
+    }
+
+    /**
+     * Subscribe to lightning__productConfigurator_notification (the same channel the panel
+     * publishes valueChanged/updatePrices on). Guarded so it subscribes exactly once and
+     * only once messageContext is wired. Pattern mirrors configRefreshProbe /
+     * renderDraw3DConfigurationPrototype.
+     */
+    _subscribeToConfiguratorChannel() {
+        if (this._subscription || !this.messageContext) {
+            return;
+        }
+        this._subscription = subscribe(
+            this.messageContext,
+            NotificationMessageChannel,
+            (message) => this._handleConfiguratorMessage(message)
+        );
+    }
+
+    /**
+     * Inbound LMS handler. The Data Manager echoes configuration activity on this channel;
+     * the only thing we act on is a change to the active line KEY. If the inbound key differs
+     * from the line we currently hold, the rep has moved to a different (re-keyed) node, so
+     * any proposal we have is stale — invalidate it. All other inbound traffic is ignored.
+     */
+    _handleConfiguratorMessage(message) {
+        const inboundKey = this._extractLineKey(message);
+        if (inboundKey && inboundKey !== this.quoteLineItemId) {
+            this._invalidateProposalOnLineChange();
+        }
+    }
+
+    /**
+     * Pull the line key out of an inbound configurator message. Mirrors the CONFIRMED
+     * outbound shape ({ data: [{ key: [<lineref>], … }] }): key may be an array (take the
+     * first element) or a bare string. Returns null when no usable key is present.
+     */
+    _extractLineKey(message) {
+        const data = message && message.data;
+        if (!Array.isArray(data) || data.length === 0) {
+            return null;
+        }
+        const key = data[0] && data[0].key;
+        if (Array.isArray(key)) {
+            return key.length ? key[0] : null;
+        }
+        return key || null;
+    }
+
+    /**
+     * Invalidate any in-flight/pending proposal because the active line changed underneath
+     * us (the setter detected a new ref_…, or an inbound LMS message carried a different
+     * key). Clears the review card and any apply result, and resets a mid-flight phase back
+     * to READY so a stale selection can never be applied against a line the rep has left.
+     * LOADING/NON_CONFIG are left alone (the panel is still initializing / not configurable).
+     */
+    _invalidateProposalOnLineChange() {
+        this._clearProposal();
+        this._clearResult();
+        if (
+            this.phase === PHASE.EXTRACTING ||
+            this.phase === PHASE.ASKING ||
+            this.phase === PHASE.REVIEW ||
+            this.phase === PHASE.APPLYING ||
+            this.phase === PHASE.RESULT
+        ) {
+            this.phase = PHASE.READY;
+        }
     }
 
     // =====================================================================
@@ -402,7 +609,11 @@ export default class ConfigChatPanel extends LightningElement {
         try {
             const res = await extractConfiguration({
                 requirementText: text,
-                quoteLineItemId: this.quoteLineItemId
+                quoteLineItemId: this.quoteLineItemId,
+                // Pre-persist grounding source. Null on the saved-line path; when present
+                // (catalog launch) the service grounds off the product instead of the
+                // (nonexistent) persisted line. See ConfigExtractionService.resolveCatalog.
+                productId: this.rootProductId || null
             });
             this._handleExtractionResult(res);
         } catch (e) {
@@ -580,6 +791,10 @@ export default class ConfigChatPanel extends LightningElement {
                 question,
                 quoteId: this.quoteId,
                 quoteLineItemId: this.quoteLineItemId,
+                // Pre-persist product context. When present (catalog launch) AgentAdvisorService
+                // routes to the pre-persist guided-selling agent and grounds off the product;
+                // null on the saved-line path (existing Revenue_Quote_Management route).
+                productId: this.rootProductId || null,
                 sessionId: this._agentSessionId
             });
 

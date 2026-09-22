@@ -62,10 +62,19 @@
  */
 public with sharing class AgentAdvisorService {
 
-    // The agent's API / developer name (arg 2 of createCustomAction). Verified identity:
-    // Bot Id 0Xxg8000001B9dhCAC, Type = InternalCopilot / AgentforceEmployeeAgent.
+    // The SAVED-LINE agent's API / developer name (arg 2 of createCustomAction). Verified
+    // identity: Bot Id 0Xxg8000001B9dhCAC, Type = InternalCopilot / AgentforceEmployeeAgent.
+    // Used whenever we have a persisted 0QL… line (its topic actions need the real record).
     @TestVisible
     private static final String AGENT_API_NAME = 'Revenue_Quote_Management';
+
+    // The PRE-PERSIST guided-selling agent's API / developer name. A separate, insight-only,
+    // prompt-grounded Employee Agent with NO data actions (see aiAuthoringBundles/
+    // Revenue_Product_Advisor). It answers purely from the product CONTEXT text we pass, so
+    // it needs no persisted Quote/QLI — which is exactly the catalog-launch case where the
+    // line is still a transient ref_ configurator node. The existing agent is left untouched.
+    @TestVisible
+    private static final String PREPERSIST_AGENT_API_NAME = 'Revenue_Product_Advisor';
 
     // The standard CUSTOM invocable action that manages an agent session.
     @TestVisible
@@ -90,12 +99,14 @@ public with sharing class AgentAdvisorService {
     // RealAgentGateway, which performs the single createCustomAction(...).invoke() call.
     public interface AgentGateway {
         /**
-         * @param userMessage the (context-prefixed) message to send to the agent
-         * @param sessionId   the prior session id for multi-turn continuity, or null/blank
+         * @param userMessage  the (context-prefixed) message to send to the agent
+         * @param sessionId    the prior session id for multi-turn continuity, or null/blank
+         * @param agentApiName the agent's API/developer name to target (saved-line vs
+         *                     pre-persist agent) — arg 2 of createCustomAction
          * @return the raw agent response (envelope + session id)
          * @throws AgentAdvisorException on a hard invocation failure (empty/failed result)
          */
-        AgentRawResponse invoke(String userMessage, String sessionId);
+        AgentRawResponse invoke(String userMessage, String sessionId, String agentApiName);
     }
 
     /** Raw, unparsed output of one agent invocation. */
@@ -118,11 +129,12 @@ public with sharing class AgentAdvisorService {
      */
     @TestVisible
     private class RealAgentGateway implements AgentGateway {
-        public AgentRawResponse invoke(String userMessage, String sessionId) {
+        public AgentRawResponse invoke(String userMessage, String sessionId, String agentApiName) {
             // Verified contract (2026-07-19 smoke test): the CUSTOM action's TYPE is
             // 'generateAiAgentResponse' and its NAME is the agent's API/developer name.
+            // agentApiName is chosen by the caller (saved-line vs pre-persist agent).
             Invocable.Action action =
-                Invocable.Action.createCustomAction(AGENT_ACTION_NAME, AGENT_API_NAME);
+                Invocable.Action.createCustomAction(AGENT_ACTION_NAME, agentApiName);
             action.setInvocationParameter('userMessage', userMessage);
             // Pass sessionId only when we have one, so the first turn creates a session.
             if (String.isNotBlank(sessionId)) {
@@ -202,16 +214,45 @@ public with sharing class AgentAdvisorService {
     // ENTRY POINT
     // =========================================================================
     /**
-     * Forwards a rep's informational question to the Revenue Management agent and returns
-     * its answer as text.
+     * Backward-compatible 4-arg overload (productId = null → saved-line agent + context).
+     *
+     * NOT @AuraEnabled: only ONE overload may carry the annotation and the LWC always calls
+     * the 5-arg form. Retained so pre-existing Apex callers and the existing
+     * AgentAdvisorServiceTest cases compile unchanged.
+     *
+     * @param question         the rep's free-text question
+     * @param quoteId          parent Quote Id, for the CONTEXT block (may be blank)
+     * @param quoteLineItemId  root configurable QLI Id, for the CONTEXT block (may be blank)
+     * @param sessionId        prior agent session id for multi-turn continuity, or null
+     * @return AgentAnswer — delegates to the 5-arg form with no product grounding
+     */
+    public static AgentAnswer askAgent(String question,
+                                       String quoteId,
+                                       String quoteLineItemId,
+                                       String sessionId) {
+        return askAgent(question, quoteId, quoteLineItemId, null, sessionId);
+    }
+
+    /**
+     * Forwards a rep's informational question to the appropriate guided-selling agent and
+     * returns its answer as text.
+     *
+     * AGENT SELECTION (mirrors the LWC's _isPrePersist routing and resolveCatalog in
+     * ConfigExtractionService): when the line is NOT a persisted 0QL… record (blank, or a
+     * transient ref_ configurator node) AND a productId is supplied, the question is routed
+     * to the PRE-PERSIST agent (Revenue_Product_Advisor) grounded on a PRODUCT context block;
+     * otherwise it goes to the saved-line agent (Revenue_Quote_Management) grounded on the
+     * quote/line context block. This keeps the existing saved-line behaviour byte-for-byte.
      *
      * cacheable MUST be false: this makes an agent invocation (a callout-like action) and
      * the answer is non-deterministic per question. No DML is performed.
      *
      * @param question         the rep's free-text question (already determined to be Q&A,
      *                         not a configuration requirement — see D11 routing in the LWC)
-     * @param quoteId          parent Quote Id, for the CONTEXT block (may be blank)
-     * @param quoteLineItemId  root configurable QLI Id, for the CONTEXT block (may be blank)
+     * @param quoteId          parent Quote Id, for the saved-line CONTEXT block (may be blank)
+     * @param quoteLineItemId  root configurable QLI Id (persisted 0QL… or transient ref_)
+     * @param productId        root configurable Product2 Id — pre-persist grounding source;
+     *                         non-blank on the catalog-launch path, null on the saved path
      * @param sessionId        prior agent session id for multi-turn continuity, or null
      * @return AgentAnswer — always a structured result, never a thrown exception
      */
@@ -219,6 +260,7 @@ public with sharing class AgentAdvisorService {
     public static AgentAnswer askAgent(String question,
                                        String quoteId,
                                        String quoteLineItemId,
+                                       String productId,
                                        String sessionId) {
         AgentAnswer a = new AgentAnswer();
 
@@ -230,11 +272,21 @@ public with sharing class AgentAdvisorService {
         }
 
         try {
-            // --- 2. Ground the question with the quote/line CONTEXT block ------
-            String userMessage = buildContextMessage(question, quoteId, quoteLineItemId);
+            // --- 2. Select agent + build its grounding CONTEXT block ----------
+            // Pre-persist when the line is not a persisted 0QL… record and we have a product
+            // to ground on. The pre-persist agent is prompt-only, so it gets a product
+            // context block instead of a quote/line one.
+            Boolean isPersistedLine =
+                String.isNotBlank(quoteLineItemId) && quoteLineItemId.startsWith('0QL');
+            Boolean isPrePersist = !isPersistedLine && String.isNotBlank(productId);
 
-            // --- 3. Invoke the agent through the injectable seam --------------
-            AgentRawResponse raw = agentGateway.invoke(userMessage, sessionId);
+            String agentApiName = isPrePersist ? PREPERSIST_AGENT_API_NAME : AGENT_API_NAME;
+            String userMessage = isPrePersist
+                ? buildProductContextMessage(question, productId)
+                : buildContextMessage(question, quoteId, quoteLineItemId);
+
+            // --- 3. Invoke the selected agent through the injectable seam -----
+            AgentRawResponse raw = agentGateway.invoke(userMessage, sessionId, agentApiName);
 
             // Carry the session id forward even if the answer turns out unusable, so a
             // follow-up stays in the same conversation.
@@ -281,6 +333,55 @@ public with sharing class AgentAdvisorService {
         }
         if (String.isNotBlank(quoteLineItemId)) {
             parts.add('quoteLineItemId=' + quoteLineItemId);
+        }
+        if (parts.isEmpty()) {
+            return question; // no context available — send the bare question
+        }
+        return 'CONTEXT: ' + String.join(parts, ' ') + '\n\n' + question;
+    }
+
+    /**
+     * PRE-PERSIST context: grounds the pre-persist agent on the PRODUCT and its configurable
+     * attributes (there is no persisted Quote/QLI yet). Resolves the product catalog through
+     * ProductConfigGroundingService (the same zero-drift grounding the panel renders from),
+     * then formats it. Kept thin so the pure formatting is unit-testable via formatProductContext.
+     */
+    private static String buildProductContextMessage(String question, String productId) {
+        ConfigEngineController.AttributesResult catalog =
+            ProductConfigGroundingService.getAttributesForProduct(productId);
+        return formatProductContext(question, productId, catalog);
+    }
+
+    /**
+     * Formats the product CONTEXT block from a resolved attribute catalog. Pure + null-safe,
+     * so it is unit-tested directly with a synthetic catalog (no SOQL / reader seam needed):
+     *   CONTEXT: productId=<id> productName=<name> attributes=[DutyRating (Picklist): Standby,
+     *            Prime, DataCenterContinuous; requiredKW (Number)]
+     *
+     *   <question>
+     * Picklist attributes list their legal values; non-picklist attributes list only the type.
+     * When there is nothing usable to add, the bare question is returned.
+     */
+    @TestVisible
+    private static String formatProductContext(String question, String productId,
+            ConfigEngineController.AttributesResult catalog) {
+        List<String> parts = new List<String>();
+        if (String.isNotBlank(productId)) {
+            parts.add('productId=' + productId);
+        }
+        if (catalog != null && String.isNotBlank(catalog.productName)) {
+            parts.add('productName=' + catalog.productName);
+        }
+        if (catalog != null && catalog.attributes != null && !catalog.attributes.isEmpty()) {
+            List<String> attrParts = new List<String>();
+            for (ConfigEngineController.AttributeOption o : catalog.attributes) {
+                String seg = o.developerName + ' (' + o.dataType + ')';
+                if (o.picklistValues != null && !o.picklistValues.isEmpty()) {
+                    seg += ': ' + String.join(o.picklistValues, ', ');
+                }
+                attrParts.add(seg);
+            }
+            parts.add('attributes=[' + String.join(attrParts, '; ') + ']');
         }
         if (parts.isEmpty()) {
             return question; // no context available — send the bare question

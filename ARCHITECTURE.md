@@ -1,12 +1,17 @@
 # Architecture — RLM Conversational Product Configurator
 
-> **Status:** ⚙️ **BUILT & DEPLOYED** to `rlm_agent_config_concept` · **As of:** 2026-07-20
+> **Status:** ⚙️ **BUILT & DEPLOYED** · original POC on `rlm_agent_config_concept` (2026-07-20); **pre-persist
+> enhancement + new guided-selling agent** on the clone `rlm-agent-config-v2` (2026-09-11). **As of:** 2026-09-11
 >
 > This is the **final, as-built architecture** of the POC — a single reference for how the pieces
 > fit together and why. It reflects the deployed state, not the original plan. For the *chronological*
 > narrative (what changed, when, and how to revert) see [PROJECT-JOURNAL.md](PROJECT-JOURNAL.md); for the
 > *decisions and their rationale* see [06-open-questions-and-decisions.md](06-open-questions-and-decisions.md);
 > for the *discovered engine internals* see [07-discovered-engine.md](07-discovered-engine.md).
+>
+> **Two launch paths.** The panel now works both from a **persisted** quote line (`0QL…`, open a saved line →
+> Configure) *and* **pre-persist** directly from the product catalog (Configure before Save, where only a transient
+> `ref_<uuid>` configurator node exists). See [§3.3 Pre-persist path](#33-pre-persist-path-catalog-configure-before-save).
 
 ---
 
@@ -24,9 +29,17 @@ on what the rep meant:
 
 The panel decides which turn to run per message (see [§4 Intent routing](#4-intent-routing--the-turn-decision)).
 
-**Reference org:** `rlm_agent_config_concept` (trial: `trailsignup-e01123b28c25c6`, API v67.0).
-**Canonical test data:** Quote `0Q0g80000017wQ5CAI`, root configurable line `0QLg8000001RYgDGAW`
+**Reference org (original POC):** `rlm_agent_config_concept` (trial: `trailsignup-e01123b28c25c6`, API v67.0).
+Canonical test data: Quote `0Q0g80000017wQ5CAI`, root configurable line `0QLg8000001RYgDGAW`
 (**FESBA Generator Set**, `01tg80000047iP9AAI`).
+
+**Active org (pre-persist enhancement):** `rlm-agent-config-v2` — a **clone** (org `00DgK00000Zok57UAB`, trial
+`trailsignup-802b9f3fe5ee02`, API v67.0). **Clone fixtures differ from the original** and are the ones the
+2026-09-11 work was validated against: FESBA Generator Set product **`01tgK00000EPnyuQAD`**
+(ProductClassification `BasedOnId = 11BgK00000h2GWCUA2`), Quote **`0Q0gK000002dwcTSAQ`**.
+> ⚠️ Several *live-data* tests in `ConfigEngineControllerTest` / `ConfigLmsGroundingServiceTest` still hardcode the
+> **original** line Id `0QLg8000001RYgDGAW` and therefore **fail on the clone** (`QuoteLineItem not found`). This is
+> stale-fixture drift, not a regression — see [PROJECT-JOURNAL.md](PROJECT-JOURNAL.md) (2026-09-11 entry).
 
 ---
 
@@ -120,6 +133,36 @@ The panel decides which turn to run per message (see [§4 Intent routing](#4-int
    is held in memory so a follow-up stays in the same agent conversation (multi-turn continuity, POC = in-memory
    only, not persisted across reload).
 
+### 3.3 Pre-persist path (catalog "Configure" before Save)
+
+When a rep clicks **Configure directly from the product catalog**, the RLM Configurator hands the flow a
+**transient in-memory node reference** (`ref_<uuid>`) as `transactionLineId` — there is no `0QL…` record yet
+(it is minted, with its `QuoteLineItemAttribute` rows, only on the native Save). The panel detects this and
+**grounds off the product instead of the (nonexistent) line**. Everything downstream is unchanged.
+
+1. **Detect (synchronous, no callout).** `configChatPanel._isPrePersist` is true when `quoteLineItemId` is
+   absent/blank or does **not** start with `0QL`. The flow also passes `rootProductId`
+   (`S01_DataManager.rootProductId → S00_ConfigChatPanel.rootProductId`).
+2. **Route the wires by an `undefined` reactive param.** `_qliParam` returns `undefined` pre-persist (so the QLI
+   wires **never fire with a `ref_…`** — this alone removes the crash) and `_productParam` returns `undefined`
+   post-persist. LWC suppresses any `@wire` whose reactive `$param` is `undefined`, so exactly one variant of each
+   pair runs. The QLI and product variants funnel into the **same handlers** (`_applyCatalog` / `_applyLmsGrounding`).
+3. **Ground off the product.** `ProductConfigGroundingService.getAttributesForProduct` / `getLmsGroundingForProduct`
+   return the **same DTO types** as the persisted path, built with the **identical `Name ?? Code` label expression**
+   (zero drift — see [§6.7](#6-key-architectural-decisions-and-why)). `ConfigExtractionService.extractConfiguration`
+   takes an added `productId` and grounds through `resolveCatalog(qli, productId)`.
+4. **Apply is unchanged.** `handleApply` already keys `valueChanged` on `this.quoteLineItemId` — pre-persist that
+   *is* the `ref_…` node key the LMS contract expects. Same Numbers-first-then-Picklists ordering, same single
+   `updatePrices`. Added **invalidation**: if the ref changes (deselect/reselect mints a new `ref_…`), any pending
+   proposal is cleared and the phase resets to `READY` so a stale ref is never published. The panel also
+   **subscribes** to the LMS channel (was publish-only) as a second trigger for this invalidation.
+5. **Guided-selling routes to a *different* agent.** Pre-persist Q&A goes to **`Revenue_Product_Advisor`** (an
+   insight-only agent that needs no persisted record) instead of `Revenue_Quote_Management`. See
+   [§5 Components](#5-components) and [§6.8](#6-key-architectural-decisions-and-why).
+
+> **One remaining live [verify]:** that the Data Manager **accepts a `valueChanged` whose `key` is `["ref_…"]`**
+> pre-persist. Code is in place; this is a live-click confirmation (Stage 0 spike), not a code change.
+
 ---
 
 ## 4. Intent routing — the turn decision
@@ -158,12 +201,32 @@ phrasing. The heuristic is kept only as a **free fast-path** so clear questions 
 
 | Component | Type | Role |
 |---|---|---|
-| [`configChatPanel`](force-app/main/default/lwc/configChatPanel/) | LWC | **The POC deliverable.** State machine (LOADING → READY → EXTRACTING/ASKING → REVIEW → APPLYING → RESULT), intent routing, review card, auto-apply, LMS publish, agent Q&A. |
-| [`ConfigExtractionService`](force-app/main/default/classes/ConfigExtractionService.cls) | Apex | Grounded NL→validated-fields extraction **+ intent classification** in one Einstein callout. Injectable `LlmGateway` seam for tests; deterministic keyword fallback. |
-| [`ConfigLmsGroundingService`](force-app/main/default/classes/ConfigLmsGroundingService.cls) | Apex | Supplies `attributeId` (0tj) + picklist **label→0v6-Id** map for the `valueChanged` payload. Per-attribute `ambiguousLabels` collision guard. |
-| [`AgentAdvisorService`](force-app/main/default/classes/AgentAdvisorService.cls) | Apex | `@AuraEnabled` wrapper over the `generateAiAgentResponse` invocable custom action. Injectable `AgentGateway` seam for tests. Insight-only — never applies a config. |
+| [`configChatPanel`](force-app/main/default/lwc/configChatPanel/) | LWC | **The POC deliverable.** State machine (LOADING → READY → EXTRACTING/ASKING → REVIEW → APPLYING → RESULT), intent routing, review card, auto-apply, LMS publish, agent Q&A. **Pre-persist aware:** `@api rootProductId`, `_isPrePersist`, `_qliParam`/`_productParam` wire gating, ref-change invalidation. Now **subscribes** to the LMS channel too (was publish-only). |
+| [`ProductConfigGroundingService`](force-app/main/default/classes/ProductConfigGroundingService.cls) | Apex | **Pre-persist grounding.** `getAttributesForProduct` / `getLmsGroundingForProduct` return the **same DTO types** as the persisted path, built by SOQL off the product's classification with the **identical `Name ?? Code`** label expression (zero drift) + the same `ambiguousLabels` guard. `@TestVisible CatalogReader` seam. Never throws to the wire. |
+| [`ConfigExtractionService`](force-app/main/default/classes/ConfigExtractionService.cls) | Apex | Grounded NL→validated-fields extraction **+ intent classification** in one Einstein callout. Now takes `productId` (`resolveCatalog` routes to product- vs line-grounding; 2-arg overload preserved). Injectable `LlmGateway` seam for tests; deterministic keyword fallback. |
+| [`ConfigLmsGroundingService`](force-app/main/default/classes/ConfigLmsGroundingService.cls) | Apex | Supplies `attributeId` (0tj) + picklist **label→0v6-Id** map for the `valueChanged` payload. Per-attribute `ambiguousLabels` collision guard. **(Reference for the product service's label/shape; not modified.)** |
+| [`AgentAdvisorService`](force-app/main/default/classes/AgentAdvisorService.cls) | Apex | `@AuraEnabled` wrapper over the `generateAiAgentResponse` invocable custom action. **Dual-agent:** selects `Revenue_Product_Advisor` (pre-persist, product CONTEXT) vs `Revenue_Quote_Management` (persisted line) per turn; `AgentGateway.invoke(userMessage, sessionId, agentApiName)` seam; `productId` added to `askAgent` (4-arg overload preserved). Insight-only — never applies a config. |
 | [`ConfigEngineController`](force-app/main/default/classes/ConfigEngineController.cls) | Apex | Thin `@AuraEnabled` orchestration over the protected engine: `getAttributes`, `getSavedConfiguration`, `applyConfiguration` (PST path — now **bypassed** by the LMS publish). **May read; do not change its logic.** |
-| `*Test` classes | Apex | Deploy-gate coverage. `ConfigExtractionServiceTest` = 24 tests, service at 87%. All mock their gateway seams so no live Einstein/agent credits are burned. |
+| `*Test` classes | Apex | Deploy-gate coverage, all mocking their gateway/reader seams (no live Einstein/agent credits). Pre-persist work: `ProductConfigGroundingServiceTest`, extended `ConfigExtractionServiceTest` / `AgentAdvisorServiceTest` — all pass. Coverage: ConfigExtractionService 87%, AgentAdvisorService 84%, ProductConfigGroundingService 92%, ConfigLmsGroundingService 92%. |
+
+### Agentforce agents (guided-selling turn)
+
+Two agents back the Q&A turn; the panel picks one per turn by whether the line is persisted.
+
+| Agent | Metadata | Role |
+|---|---|---|
+| `Revenue_Quote_Management` | (existing NGA agent — `BotDefinition` Type=InternalCopilot + `GenAiPlannerBundle`) | Persisted-line Q&A. Its topic actions require a real Quote/QuoteLineItem. **Left entirely untouched.** |
+| [`Revenue_Product_Advisor`](force-app/main/default/aiAuthoringBundles/Revenue_Product_Advisor/) | **NEW** — NGA `aiAuthoringBundles/` (`.agent` + `.bundle-meta.xml`) | **Pre-persist Q&A.** Insight-only Employee agent: one `system:` persona + one advice `topic:` with **zero data actions / zero `GenAiFunction`**. Grounds purely on the CONTEXT block passed in `userMessage`, so it needs no persisted record. |
+
+**NGA authoring facts (2026-09-11):** author `aiAuthoringBundles/` **only** — never commit `bots/`,
+`genAiPlanners/`, `genAiFunctions/`, `genAiPlugins/`, `genAiPlannerBundles/` (all legacy Bot 1.0). Flow:
+`.agent` (**tab-only** indentation — Agent Builder 2.0 rejects spaces with `PARSE_EXCEPTION`) → `sf agent validate
+authoring-bundle` → `sf project deploy start --source-dir` → **USER activates in Agent Builder 2.0 UI** (sets
+Employee type, assigns agent user if prompted, Activates) → retrieve back. Apex invocability
+(`createCustomAction('generateAiAgentResponse', '<apiName>')`) works **after** UI activation creates the runtime
+Bot — no source-committed Bot/BotVersion needed. This org runs its Employee Agents session-based with **no
+dedicated Einstein Agent User**, so the bundle omits `default_agent_user` (validation passed without it). Editor
+tab-protection lives in `.editorconfig` `[*.agent]` and `.vscode/settings.json` `[agentscript]`.
 
 ### Protected — DO NOT MODIFY / DELETE
 
@@ -221,6 +284,21 @@ These back a **live NGA Agentforce agent** or are the reference flow. Read-only.
    Id, Apply refuses that row (rather than coin-flipping a value the Data Manager would silently accept), and
    auto-apply degrades the whole proposal to manual review.
 
+7. **Pre-persist grounds off the product via SOQL, not the Connect API — for zero drift.** The load-bearing
+   correctness property is that a proposal built pre-persist grounds to the *same* attribute developerNames and the
+   *same* picklist label→`0v6`-Id join as the persisted path, so behaviour is identical the moment the line is saved.
+   The persisted path resolves labels as `Name ?? Code`; only a SOQL path using the **identical `Name ?? Code`
+   expression** guarantees no drift. `/connect/cpq/products/{productId}` is a callout returning a different shape
+   (`displayValue`/`name`/`code`) that would reintroduce label drift and is harder to unit-test — documented as the
+   authoritative fallback if scope diverges beyond FESBA. The reactive-param wire gating (an `undefined` `$param`
+   suppresses its `@wire`) means the crash-causing QLI wires simply never fire on a `ref_…`.
+
+8. **A separate agent for the pre-persist Q&A turn — the existing agent is never touched.** `Revenue_Quote_Management`'s
+   topic actions require a persisted Quote/QLI (a bare pre-persist probe returns "QuoteLineItem … not found"), so the
+   catalog turn needs its own agent. `Revenue_Product_Advisor` is **insight-only** (zero data actions), grounded purely
+   on the CONTEXT text we pass, so it needs no record. Selection is by line state in `AgentAdvisorService`; the
+   persisted-line path is byte-for-byte unchanged (preserved via non-annotated overloads).
+
 ---
 
 ## 7. Constraints & operational notes
@@ -230,8 +308,9 @@ These back a **live NGA Agentforce agent** or are the reference flow. Read-only.
 - **LWC caches aggressively.** After any `configChatPanel` redeploy, the rep must **hard-refresh** the flow tab
   (Cmd+Shift+R / close+reopen) or the browser keeps running the old bundle. (This masked a fix once during the
   build.)
-- **No git — `backups/` is the only rollback path.** Each change point is snapshotted under a dated folder; see
-  the [PROJECT-JOURNAL.md](PROJECT-JOURNAL.md) Backups & Revert Protocol.
+- **Rollback path.** As of 2026-09-11 the project is **git-backed** (private repo, branch `rlm-config-agent-v2`) —
+  git is the primary revert path. Pre-git change points (through 2026-07-20) are snapshotted under dated `backups/`
+  folders; see the [PROJECT-JOURNAL.md](PROJECT-JOURNAL.md) Backups & Revert Protocol.
 - **Agent latency ~8–9s P75.** The <5s target from the original canvas was refuted; success is measured as a P75
   with a visible progress state.
 - **Trial org expires 2026-08-17.** Plan any longer-lived demo accordingly.

@@ -640,6 +640,18 @@
                             <elementReference>configuratorContext.transactionLineId</elementReference>
                         </value>
                     </inputParameters>
+                    <inputParameters>
+                        <!-- PRE-PERSIST grounding source (Stage 1). On the catalog-launch path
+                             transactionLineId is a transient ref_ node id (no persisted QLI to
+                             read), so the panel grounds its attribute catalog / LMS mapping off
+                             this root product instead. rootProductId is already resolved by the
+                             managed Data Manager (see line ~231, where it feeds the native
+                             configHeader), so no new managed call is introduced. -->
+                        <name>rootProductId</name>
+                        <value>
+                            <elementReference>S01_DataManager.rootProductId</elementReference>
+                        </value>
+                    </inputParameters>
                     <isRequired>false</isRequired>
                     <storeOutputAutomatically>true</storeOutputAutomatically>
                     <styleProperties>

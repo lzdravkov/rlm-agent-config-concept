@@ -16,7 +16,16 @@
             <property name="quoteId" type="String" label="Quote Id"
                       description="Id of the parent Quote (required by the save/reprice engine)."/>
             <property name="quoteLineItemId" type="String" label="Quote Line Item Id"
-                      description="Id of the root configurable QuoteLineItem being configured."/>
+                      description="Id of the root configurable QuoteLineItem being configured. On the catalog-launch (pre-persist) path this is a transient ref_ configurator node id, not a 0QL record."/>
+            <!--
+                PRE-PERSIST grounding source (Stage 1). Bind to S01_DataManager.rootProductId in
+                Agent_Product_Configurator_Flow. When the line is a transient ref_ node (Configure
+                launched from the product catalog before Save) there is no persisted QuoteLineItem
+                to read, so the panel grounds its attribute catalog / LMS mapping off this product
+                instead. Absent on the saved-line path (the 0QL wires take over).
+            -->
+            <property name="rootProductId" type="String" label="Root Product Id"
+                      description="Id of the root configurable Product2 (S01_DataManager.rootProductId). Grounding source for the pre-persist catalog path where no persisted QuoteLineItem exists yet."/>
             <!--
                 AUTO-APPLY default (2026-07-17; default flipped to true 2026-07-19). Sets the
                 STARTING mode of the in-panel Auto-apply toggle. When true (now the default), a

@@ -5,5 +5,11 @@
     "**/.sf": true,
     "**/.sfdx": true
   },
-  "xml.preferences.showSchemaDocumentationType": "none"
+  "xml.preferences.showSchemaDocumentationType": "none",
+  "[agentscript]": {
+    "editor.insertSpaces": false,
+    "editor.detectIndentation": false,
+    "editor.formatOnSave": false,
+    "editor.formatOnPaste": false
+  }
 }
