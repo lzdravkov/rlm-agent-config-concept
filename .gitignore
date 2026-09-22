@@ -51,3 +51,14 @@ $RECYCLE.BIN/
 **/__pycache__/
 **/.venv/
 **/venv/
+
+# Local-only planning docs and project journal (kept out of the published repo)
+01-executive-summary.md
+02-research-findings.md
+03-gap-analysis.md
+04-corrected-architecture.md
+05-project-plan.md
+06-open-questions-and-decisions.md
+07-discovered-engine.md
+PROJECT-JOURNAL.md
+PROJECT-PLAN.md
